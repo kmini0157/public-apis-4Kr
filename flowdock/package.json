@@ -1,0 +1,24 @@
+{
+  "name": "flowdock",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Developer-first multi-API automation hub — durable workflow engine (M0 core)",
+  "bin": {
+    "flowdock": "./src/cli.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test test/*.test.ts",
+    "cli": "node --import tsx src/cli.ts",
+    "example": "node --import tsx src/cli.ts run examples/morning-briefing.yaml"
+  },
+  "dependencies": {
+    "yaml": "^2.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}

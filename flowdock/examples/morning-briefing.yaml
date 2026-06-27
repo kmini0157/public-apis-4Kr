@@ -1,0 +1,24 @@
+# Keyless end-to-end demo: extract → summarize → push.
+# Runs with ZERO credentials (network permitting):
+#   FLOWDOCK_MASTER_KEY=$(openssl rand -base64 32) npm run example
+name: 아침 AI 브리핑 (keyless)
+on:
+  cron: "0 7 * * *"
+nodes:
+  - id: fetch
+    uses: jina.reader
+    with:
+      url: "https://news.ycombinator.com"
+
+  - id: summarize
+    uses: llm.chat
+    with:
+      system: "너는 간결한 한국어 요약가다."
+      prompt: "다음 페이지 내용을 한국어 3줄로 요약해줘:\n\n{{ nodes.fetch.output.text }}"
+
+  - id: notify
+    uses: ntfy.publish
+    with:
+      topic: "{{ trigger.topic ?? 'flowdock-demo' }}"
+      title: "오늘의 AI 브리핑"
+      message: "{{ nodes.summarize.output.text }}"
