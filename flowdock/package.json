@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test test/*.test.ts",
     "cli": "node --import tsx src/cli.ts",
+    "serve": "node --import tsx src/cli.ts serve",
     "example": "node --import tsx src/cli.ts run examples/morning-briefing.yaml"
   },
   "dependencies": {

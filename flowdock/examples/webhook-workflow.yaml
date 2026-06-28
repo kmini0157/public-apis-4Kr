@@ -1,0 +1,25 @@
+# Webhook-triggered: POST a URL, get back a pushed summary.
+# Start the server with `flowdock serve`, then POST to the printed hook URL:
+#   curl -X POST <hookUrl> -H 'content-type: application/json' \
+#        -d '{"url":"https://example.com","topic":"my-topic"}'
+name: 온디맨드 요약 (webhook)
+on:
+  webhook:
+    secret: "demo-secret-change-me"
+nodes:
+  - id: fetch
+    uses: jina.reader
+    with:
+      url: "{{ trigger.body.url }}"
+
+  - id: summarize
+    uses: llm.chat
+    with:
+      prompt: "한국어 3줄 요약:\n\n{{ nodes.fetch.output.text }}"
+
+  - id: notify
+    uses: ntfy.publish
+    with:
+      topic: "{{ trigger.body.topic ?? 'flowdock-demo' }}"
+      title: "요약 완료"
+      message: "{{ nodes.summarize.output.text }}"

@@ -7,7 +7,7 @@
  * Turso / Postgres without touching the engine.
  */
 
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync, renameSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { RunRecord, StepRecord } from "./types.ts";
 
@@ -19,8 +19,26 @@ export interface Store {
   getSteps(runId: string): StepRecord[];
 }
 
+/**
+ * Optional capability for stores that can answer run-level queries — used by
+ * the trigger server for GET /runs and webhook replay protection. Kept separate
+ * from the base Store so the engine and existing impls are unaffected.
+ */
+export interface RunQueryStore {
+  getRunsForWorkflow(workflowName: string): RunRecord[];
+  getRunByIdempotencyKey(key: string): RunRecord | undefined;
+}
+
+/** Atomic file write (temp + rename) so a crash mid-write can't truncate state. */
+function atomicWrite(path: string, data: string): void {
+  mkdirSync(dirname(path), { recursive: true });
+  const tmp = `${path}.tmp`;
+  writeFileSync(tmp, data);
+  renameSync(tmp, path);
+}
+
 /** Zero-dependency in-memory store — used by tests and ephemeral runs. */
-export class MemoryStore implements Store {
+export class MemoryStore implements Store, RunQueryStore {
   private runs = new Map<string, RunRecord>();
   private steps = new Map<string, StepRecord>();
   private key(runId: string, nodeId: string) {
@@ -41,6 +59,12 @@ export class MemoryStore implements Store {
   getSteps(runId: string) {
     return [...this.steps.values()].filter((s) => s.runId === runId);
   }
+  getRunsForWorkflow(workflowName: string) {
+    return [...this.runs.values()].filter((r) => r.workflowName === workflowName);
+  }
+  getRunByIdempotencyKey(key: string) {
+    return [...this.runs.values()].find((r) => r.idempotencyKey === key);
+  }
 }
 
 interface FileShape {
@@ -49,7 +73,7 @@ interface FileShape {
 }
 
 /** JSON-file store: durable across process restarts, good enough for dev. */
-export class JsonStore implements Store {
+export class JsonStore implements Store, RunQueryStore {
   private data: FileShape = { runs: {}, steps: {} };
 
   constructor(private readonly path = join(".flowdock", "state.json")) {
@@ -62,8 +86,7 @@ export class JsonStore implements Store {
     }
   }
   private flush() {
-    mkdirSync(dirname(this.path), { recursive: true });
-    writeFileSync(this.path, JSON.stringify(this.data, null, 2));
+    atomicWrite(this.path, JSON.stringify(this.data, null, 2));
   }
   private key(runId: string, nodeId: string) {
     return `${runId}::${nodeId}`;
@@ -85,4 +108,13 @@ export class JsonStore implements Store {
   getSteps(runId: string) {
     return Object.values(this.data.steps).filter((s) => s.runId === runId);
   }
+  getRunsForWorkflow(workflowName: string) {
+    return Object.values(this.data.runs).filter((r) => r.workflowName === workflowName);
+  }
+  getRunByIdempotencyKey(key: string) {
+    return Object.values(this.data.runs).find((r) => r.idempotencyKey === key);
+  }
 }
+
+/** Shared atomic-write helper for sibling stores (registry, webhook secrets). */
+export { atomicWrite };

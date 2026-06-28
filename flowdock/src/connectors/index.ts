@@ -7,7 +7,7 @@
  * vault injects creds automatically.
  */
 
-import type { Connector, ConnectorContext, Json } from "../types.ts";
+import type { Connector, ConnectorContext, ConnectorManifest, Json } from "../types.ts";
 
 // --- helpers -----------------------------------------------------------------
 
@@ -176,15 +176,42 @@ const BUILTINS: Connector[] = [
   resendEmail,
 ];
 
+export interface DynamicMeta {
+  verified: boolean;
+  pinVersion?: string;
+}
+
 /** Mutable registry so M2's Connector SDK can register community connectors. */
 export class ConnectorRegistry {
   private map = new Map<string, Connector>();
-  constructor(initial: Connector[] = BUILTINS) {
+  private dynamicMeta = new Map<string, DynamicMeta>();
+  constructor(
+    initial: Connector[] = BUILTINS,
+    private readonly warn: (msg: string) => void = (m) => console.error(m),
+  ) {
     for (const c of initial) this.register(c);
   }
+  /** Strict registration for built-ins: a duplicate id is a programming error. */
   register(c: Connector): void {
     if (this.map.has(c.id)) throw new Error(`Connector '${c.id}' already registered`);
     this.map.set(c.id, c);
+  }
+  /**
+   * Lenient registration for community connectors: first-wins. A built-in or
+   * earlier community connector with the same id is NOT overridden (a malicious
+   * package can't shadow `resend.email`); we warn and skip instead.
+   */
+  registerDynamic(c: Connector, options: { verified?: boolean; pinVersion?: string } = {}): boolean {
+    if (this.map.has(c.id)) {
+      this.warn(`Connector '${c.id}' already registered — skipping dynamic copy (first wins)`);
+      return false;
+    }
+    this.map.set(c.id, c);
+    this.dynamicMeta.set(c.id, {
+      verified: options.verified ?? false,
+      ...(options.pinVersion ? { pinVersion: options.pinVersion } : {}),
+    });
+    return true;
   }
   get(id: string): Connector {
     const c = this.map.get(id);
@@ -196,6 +223,12 @@ export class ConnectorRegistry {
   }
   list(): Connector[] {
     return [...this.map.values()];
+  }
+  manifest(id: string): ConnectorManifest | undefined {
+    return this.map.get(id)?.manifest;
+  }
+  dynamicInfo(id: string): DynamicMeta | undefined {
+    return this.dynamicMeta.get(id);
   }
 }
 

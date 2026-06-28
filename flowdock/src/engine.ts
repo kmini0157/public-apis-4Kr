@@ -12,6 +12,7 @@
  *                 into each connector call.
  */
 
+import { randomUUID } from "node:crypto";
 import { resolve, referencedNodes } from "./expr.ts";
 import { RateLimiter } from "./ratelimit.ts";
 import { maskingLogger } from "./vault.ts";
@@ -51,6 +52,8 @@ export interface RunInput {
   runId?: string;
   /** Trigger payload exposed as {{ trigger.* }}. */
   trigger?: Json;
+  /** Webhook idempotency key, recorded on the run for replay detection. */
+  idempotencyKey?: string;
 }
 
 export interface RunResult {
@@ -124,9 +127,9 @@ export class Engine {
     this.logSink = opts.logSink ?? ((l) => console.error(l));
   }
 
-  /** Generate a runId without Math.random/Date in the hot path of determinism. */
+  /** Time-ordered + UUID suffix so rapid same-millisecond fires never collide. */
   private newRunId(): string {
-    return `run_${this.now().toString(36)}_${Math.floor(this.now() % 1e6).toString(36)}`;
+    return `run_${this.now().toString(36)}_${randomUUID().slice(0, 8)}`;
   }
 
   /** Build the rate-limited, timed-out, masking fetch handed to a connector. */
@@ -219,6 +222,7 @@ export class Engine {
       startedAt: this.now(),
     };
     run.status = "running";
+    if (opts.idempotencyKey !== undefined) run.idempotencyKey = opts.idempotencyKey;
     this.store.saveRun(run);
 
     // Seed scope with any already-succeeded checkpoints (resume path).

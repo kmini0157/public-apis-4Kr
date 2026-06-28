@@ -65,7 +65,22 @@ export interface Connector<I = Json, O = Json> {
   inputs?: Json;
   /** JSON Schema describing produced outputs (for UI + downstream typing). */
   outputs?: Json;
+  /** Publishing metadata for community connectors (M2). */
+  manifest?: ConnectorManifest;
   execute(input: I, ctx: ConnectorContext): Promise<O>;
+}
+
+/** Published metadata for a community/marketplace connector (M2). */
+export interface ConnectorManifest {
+  id: string;
+  title: string;
+  version: string;
+  /** Set once the connector passes verification (badge). */
+  verified?: boolean;
+  keywords?: string[];
+  description?: string;
+  homepage?: string;
+  author?: string;
 }
 
 /** Retry policy for a single node. */
@@ -85,13 +100,23 @@ export interface NodeSpec {
   /** Explicit dependencies in addition to those inferred from expressions. */
   needs?: string[];
   retry?: RetrySpec;
+  /** Sample output used by `flowdock run --dry-run` instead of calling the connector. */
+  mock?: Json;
+}
+
+/** Webhook trigger config. `webhook: true` is shorthand for an auto-secret. */
+export interface WebhookTrigger {
+  /** Shared secret in the hook path; auto-generated if omitted. */
+  secret?: string;
+  /** If set, also require an HMAC-SHA256 signature in this header. */
+  signatureHeader?: string;
 }
 
 export interface TriggerSpec {
-  /** Cron expression (UTC) for scheduled runs. */
+  /** Cron expression (UTC, 5-field) for scheduled runs. */
   cron?: string;
   /** Declare a webhook trigger; the server mounts /hooks/{wf}/{secret}. */
-  webhook?: boolean;
+  webhook?: boolean | WebhookTrigger;
 }
 
 /** A full workflow definition (the Workflows-as-Code unit). */
@@ -121,4 +146,46 @@ export interface RunRecord {
   status: RunStatus;
   startedAt: number;
   finishedAt?: number;
+  /** Set when a run was started via a webhook with an idempotency key (replay guard). */
+  idempotencyKey?: string;
+}
+
+/** Per-node row for the execution timeline view (M1) and GET /runs/{id}. */
+export interface RunTimeline {
+  nodeId: string;
+  status: RunStatus;
+  attempts: number;
+  latencyMs: number;
+  error?: string;
+}
+
+// --- Workflows-as-Code registry records (M1) --------------------------------
+
+/** Head pointer for a workflow, keyed by its `name`. */
+export interface WorkflowMetadata {
+  name: string;
+  /** Hash of the latest stored version. */
+  yamlHash: string;
+  latestVersion: string;
+  createdAt: number;
+  updatedAt: number;
+  author?: string;
+}
+
+/** Immutable, append-only version of a workflow — the lock-in artifact. */
+export interface WorkflowVersionRecord {
+  name: string;
+  version: string;
+  yamlHash: string;
+  /** Normalized (sorted-key, comment-stripped) YAML — the content of record. */
+  normalizedYaml: string;
+  createdAt: number;
+  author?: string;
+}
+
+/** Local manifest of synced state, written to flowdock.lock.json. */
+export interface WorkflowLockFile {
+  version: "1.0";
+  timestamp: number;
+  workflows: Record<string, { version: string; yamlHash: string }>;
 }

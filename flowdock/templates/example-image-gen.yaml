@@ -1,0 +1,15 @@
+# Generate an image from a prompt and push its URL (keyless).
+name: Image Generator
+nodes:
+  - id: image
+    uses: pollinations.image
+    with:
+      prompt: "a serene mountain lake at sunrise, watercolor"
+      width: 1024
+      height: 768
+  - id: notify
+    uses: ntfy.publish
+    with:
+      topic: "my-images"
+      title: "Image ready"
+      message: "{{ nodes.image.output.image_url }}"

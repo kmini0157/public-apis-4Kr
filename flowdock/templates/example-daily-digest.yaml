@@ -1,0 +1,19 @@
+# Daily digest: extract a page, summarize, push a notification (keyless).
+name: Daily Digest
+on:
+  cron: "0 8 * * *"
+nodes:
+  - id: fetch
+    uses: jina.reader
+    with:
+      url: "https://news.ycombinator.com"
+  - id: summarize
+    uses: llm.chat
+    with:
+      prompt: "Summarize the top stories in 3 bullet points:\n\n{{ nodes.fetch.output.text }}"
+  - id: notify
+    uses: ntfy.publish
+    with:
+      topic: "my-daily-digest"
+      title: "Daily Digest"
+      message: "{{ nodes.summarize.output.text }}"
