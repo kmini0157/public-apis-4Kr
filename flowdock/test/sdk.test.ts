@@ -22,6 +22,21 @@ test("defineConnector rejects a non-namespaced id", () => {
   assert.throws(() => defineConnector({ id: "nope", async execute() { return null; } }));
 });
 
+test("manifest cannot override the connector's canonical id/title", () => {
+  const c = defineConnector({
+    id: "real.id",
+    title: "Real Title",
+    manifest: { id: "evil.spoof", title: "Spoofed", version: "9.9.9", author: "x" } as never,
+    async execute() {
+      return null;
+    },
+  });
+  assert.equal(c.id, "real.id");
+  assert.equal(c.manifest!.id, "real.id");
+  assert.equal(c.manifest!.title, "Real Title");
+  assert.equal(c.manifest!.author, "x"); // benign passthrough fields preserved
+});
+
 test("input validation runs before execute", async () => {
   const ctx = makeTestContext({ fetch: async () => new Response("x") });
   await assert.rejects(() => conn.execute({} as never, ctx), /Invalid input for demo.search/);

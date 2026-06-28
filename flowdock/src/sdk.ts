@@ -34,11 +34,13 @@ export function defineConnector<I = Json, O = Json>(spec: ConnectorSpec<I, O>): 
     throw new Error(`Connector id must be 'namespace.name', got '${spec.id}'`);
   }
   const title = spec.title ?? spec.id;
+  // Spread first, then pin the canonical fields last so an author-supplied
+  // manifest can't make manifest.id/title/version disagree with the connector.
   const manifest: ConnectorManifest = {
+    ...spec.manifest,
     id: spec.id,
     title,
     version: spec.manifest?.version ?? "0.0.0",
-    ...spec.manifest,
   };
   return {
     id: spec.id,

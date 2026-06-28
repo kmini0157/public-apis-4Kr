@@ -103,6 +103,17 @@ function requireArg(v: string | undefined, name: string): string {
   return v;
 }
 
+/** Parse a numeric flag, rejecting a bare `--flag` (parser yields "true") -> NaN. */
+function numFlag(v: string | undefined, name: string): number | undefined {
+  if (v === undefined) return undefined;
+  const n = Number(v);
+  if (!Number.isFinite(n)) {
+    console.error(`--${name} requires a numeric value`);
+    process.exit(1);
+  }
+  return n;
+}
+
 async function main() {
   const [cmd, ...rest] = process.argv.slice(2);
   const { positional, flags } = parseFlags(rest);
@@ -191,7 +202,7 @@ async function main() {
         if (!d.added.length && !d.removed.length && !d.modified.length) console.log("no changes");
       } else {
         const name = requireArg(positional[0], "name");
-        const limit = flags.limit ? Number(flags.limit) : undefined;
+        const limit = numFlag(flags.limit, "limit");
         const versions = syncer.getHistory(name).slice(-(limit ?? 1000));
         if (!versions.length) console.log(`no history for '${name}'`);
         for (const v of versions) {
@@ -207,10 +218,12 @@ async function main() {
       const engine = buildEngine(registry);
       const store = new JsonStore();
       const workflows = loadWorkflowsDir(join(project.root, project.workflowsDir));
+      const portFlag = numFlag(flags.port, "port");
+      const bodyLimit = numFlag(flags["body-limit"], "body-limit");
       const server = new TriggerServer(workflows, engine, store, {
-        ...(flags.port ? { port: Number(flags.port) } : {}),
+        ...(portFlag !== undefined ? { port: portFlag } : {}),
         ...(flags.host ? { host: flags.host } : {}),
-        ...(flags["body-limit"] ? { bodyLimitBytes: Number(flags["body-limit"]) } : {}),
+        ...(bodyLimit !== undefined ? { bodyLimitBytes: bodyLimit } : {}),
       });
       const { host, port } = await server.listen();
       console.error(`▶ FlowDock serving ${workflows.length} workflow(s) on http://${host}:${port}`);

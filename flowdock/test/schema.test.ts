@@ -38,3 +38,12 @@ test("array items", () => {
   assert.equal(validateInput([1, 2, 3], schema).valid, true);
   assert.equal(validateInput([1, "two"], schema).valid, false);
 });
+
+test("an invalid regex pattern is a validation error, never a throw", () => {
+  let res!: ReturnType<typeof validateInput>;
+  assert.doesNotThrow(() => {
+    res = validateInput("x", { type: "string", pattern: "(" }); // unbalanced group
+  });
+  assert.equal(res.valid, false);
+  assert.ok(res.errors!.some((e) => e.includes("invalid pattern")));
+});

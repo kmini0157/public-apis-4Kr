@@ -44,7 +44,13 @@ function validateNode(value: Json, schema: Json, path: string, errors: string[])
   }
 
   if (typeof s.pattern === "string" && typeof value === "string") {
-    if (!new RegExp(s.pattern).test(value)) {
+    let re: RegExp | undefined;
+    try {
+      re = new RegExp(s.pattern);
+    } catch {
+      errors.push(`${path}: invalid pattern /${s.pattern}/`);
+    }
+    if (re && !re.test(value)) {
       errors.push(`${path}: does not match pattern /${s.pattern}/`);
     }
   }
