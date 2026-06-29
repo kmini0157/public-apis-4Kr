@@ -26,7 +26,31 @@ import { TriggerServer } from "./trigger-server.ts";
 import { scaffoldConnector } from "./sdk.ts";
 import { listTemplates, useTemplate } from "./templates.ts";
 import { WebhookSecretStore } from "./webhook-secret.ts";
+import { TenantStore, can, type Role, type Tenant } from "./tenancy.ts";
+import { UsageMeter } from "./usage.ts";
+import { Workspace, PermissionError, QuotaError, type Actor } from "./workspace.ts";
+import { getPlan, isPlanId, PLANS, UNLIMITED } from "./plans.ts";
 import type { Json, Workflow } from "./types.ts";
+
+/** Resolve the acting member: --as <email>, else the tenant's first owner. */
+function actorFrom(tenants: TenantStore, tenant: Tenant, asEmail?: string): Actor {
+  if (asEmail) {
+    const role = tenants.roleOf(asEmail);
+    if (!role) {
+      console.error(`No member '${asEmail}' in this tenant`);
+      process.exit(1);
+    }
+    return { email: asEmail, role };
+  }
+  const owner = tenant.members.find((m) => m.role === "owner") ?? tenant.members[0];
+  if (!owner) {
+    console.error("Tenant has no members");
+    process.exit(1);
+  }
+  return { email: owner.email, role: owner.role };
+}
+
+const ROLES: Role[] = ["owner", "admin", "member", "viewer"];
 
 function collectSecrets(): Record<string, string> {
   const out: Record<string, string> = {};
@@ -55,10 +79,10 @@ async function buildRegistry(project: ProjectConfig): Promise<ConnectorRegistry>
   return registry;
 }
 
-function buildEngine(registry: ConnectorRegistry): Engine {
+function buildEngine(registry: ConnectorRegistry, store: JsonStore = new JsonStore()): Engine {
   return new Engine({
     registry,
-    store: new JsonStore(),
+    store,
     secrets: collectSecrets(),
     creds: credsProvider(),
   });
@@ -148,9 +172,25 @@ async function main() {
         break;
       }
 
-      const engine = buildEngine(registry);
-      console.error(`▶ running '${wf.name}'...`);
-      const result = await engine.run(wf, { runId: flags.resume, trigger });
+      const store = new JsonStore();
+      const engine = buildEngine(registry, store);
+      const tenants = new TenantStore();
+      const tenant = tenants.get();
+      const workspace = new Workspace(tenant, engine, store, new UsageMeter());
+      const actor = actorFrom(tenants, tenant, flags.as);
+
+      console.error(`▶ running '${wf.name}' as ${actor.email} (${tenant.plan})...`);
+      let result;
+      try {
+        result = await workspace.run(wf, actor, { runId: flags.resume, trigger });
+      } catch (err) {
+        if (err instanceof PermissionError || err instanceof QuotaError) {
+          console.error(`✗ ${err.message}`);
+          process.exitCode = 1;
+          break;
+        }
+        throw err;
+      }
       console.error(`\n${result.status === "succeeded" ? "✓" : "✗"} run ${result.runId} — ${result.status}`);
       for (const s of result.steps) {
         const mark = s.status === "succeeded" ? "✓" : "✗";
@@ -186,6 +226,18 @@ async function main() {
         ...(flags.author ? { author: flags.author } : {}),
       });
       if (cmd === "push") {
+        // Enforce the plan's workflow cap before storing new versions.
+        const tenant = new TenantStore().get();
+        const plan = getPlan(tenant.plan);
+        const adding = syncer.diff(project.workflowsDir).added.length;
+        const have = registry.listWorkflows().length;
+        if (plan.maxWorkflows !== UNLIMITED && have + adding > plan.maxWorkflows) {
+          console.error(
+            `✗ Workflow limit reached: ${plan.name} allows ${plan.maxWorkflows} (have ${have}, adding ${adding}). Upgrade to push more.`,
+          );
+          process.exitCode = 1;
+          break;
+        }
         const r = syncer.push(project.workflowsDir);
         console.log(`push: ${r.pushed.length} new, ${r.unchanged.length} unchanged`);
         if (r.pushed.length) console.log(`  + ${r.pushed.join(", ")}`);
@@ -298,6 +350,97 @@ async function main() {
       break;
     }
 
+    case "plan": {
+      const tenants = new TenantStore();
+      if (positional[0] === "set") {
+        const id = requireArg(positional[1], "plan id");
+        if (!isPlanId(id)) {
+          console.error(`Unknown plan '${id}'. Valid: ${Object.keys(PLANS).join(", ")}`);
+          process.exitCode = 1;
+          break;
+        }
+        tenants.setPlan(id);
+        console.log(`✓ plan set to ${getPlan(id).name}`);
+        break;
+      }
+      const tenant = tenants.get();
+      const p = getPlan(tenant.plan);
+      const lim = (n: number) => (n === UNLIMITED ? "∞" : String(n));
+      console.log(`Plan: ${p.name} ($${p.priceUsd}/mo)`);
+      console.log(`  workflows:     ${lim(p.maxWorkflows)}`);
+      console.log(`  executions/mo: ${lim(p.executionsPerMonth)}`);
+      console.log(`  log retention: ${p.logRetentionDays} days`);
+      console.log(`  seats:         ${tenant.members.length}/${lim(p.maxSeats)}`);
+      console.log(`  concurrency:   ${lim(p.maxConcurrency)}`);
+      console.log(`  (change with: flowdock plan set <free|pro|team>)`);
+      break;
+    }
+
+    case "usage": {
+      const tenants = new TenantStore();
+      const tenant = tenants.get();
+      const store = new JsonStore();
+      const ws = new Workspace(tenant, buildEngine(new ConnectorRegistry(), store), store, new UsageMeter());
+      const s = ws.summary();
+      console.log(`Tenant '${tenant.name}' — ${s.plan.name}`);
+      console.log(`  executions this month: ${s.executionsUsed} (remaining: ${s.executionsRemaining})`);
+      console.log(`  seats: ${s.seatsUsed}/${s.plan.maxSeats === UNLIMITED ? "∞" : s.plan.maxSeats}`);
+      console.log(`  log retention: ${s.retentionDays} days`);
+      break;
+    }
+
+    case "prune": {
+      const tenants = new TenantStore();
+      const tenant = tenants.get();
+      const store = new JsonStore();
+      const ws = new Workspace(tenant, buildEngine(new ConnectorRegistry(), store), store, new UsageMeter());
+      const r = ws.enforceRetention();
+      const days = getPlan(tenant.plan).logRetentionDays;
+      console.log(`prune (${days}d retention): deleted ${r.deleted.length} run(s), kept ${r.kept}`);
+      break;
+    }
+
+    case "members": {
+      const tenants = new TenantStore();
+      const sub = positional[0];
+      const actor = actorFrom(tenants, tenants.get(), flags.as);
+      if (sub === "list" || sub === undefined) {
+        for (const m of tenants.get().members) console.log(`${m.role.padEnd(7)} ${m.email}`);
+        break;
+      }
+      // mutating member ops require manage_members
+      if (!can(actor.role, "manage_members")) {
+        console.error(`✗ ${actor.role} '${actor.email}' may not manage members`);
+        process.exitCode = 1;
+        break;
+      }
+      try {
+        if (sub === "add") {
+          const email = requireArg(positional[1], "email");
+          const role = (flags.role ?? "member") as Role;
+          if (!ROLES.includes(role)) throw new Error(`role must be one of ${ROLES.join(", ")}`);
+          tenants.addMember(email, role);
+          console.log(`✓ added ${email} (${role})`);
+        } else if (sub === "remove") {
+          tenants.removeMember(requireArg(positional[1], "email"));
+          console.log(`✓ removed`);
+        } else if (sub === "role") {
+          const email = requireArg(positional[1], "email");
+          const role = requireArg(positional[2], "role") as Role;
+          if (!ROLES.includes(role)) throw new Error(`role must be one of ${ROLES.join(", ")}`);
+          tenants.setRole(email, role);
+          console.log(`✓ ${email} is now ${role}`);
+        } else {
+          console.error("usage: flowdock members list | add <email> [--role R] | remove <email> | role <email> <role>");
+          process.exitCode = 1;
+        }
+      } catch (err) {
+        console.error(`✗ ${(err as Error).message}`);
+        process.exitCode = 1;
+      }
+      break;
+    }
+
     default:
       console.log(
         [
@@ -322,6 +465,12 @@ async function main() {
           "  connectors [--registry DIR]     list connectors",
           "  create-connector <ns.name>      scaffold a new connector + test",
           "  templates list | use <name>     template gallery",
+          "",
+          "Plan & team:",
+          "  plan [set <free|pro|team>]      show or change the plan",
+          "  usage                           executions used / remaining",
+          "  prune                           apply log-retention policy",
+          "  members list | add <email> [--role R] | remove <email> | role <email> <role>",
         ].join("\n"),
       );
       if (cmd && cmd !== "help") process.exitCode = 1;

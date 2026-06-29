@@ -29,6 +29,16 @@ export interface RunQueryStore {
   getRunByIdempotencyKey(key: string): RunRecord | undefined;
 }
 
+/**
+ * Optional capability for stores that can enumerate and delete runs — used by
+ * retention pruning (the log-retention paywall). Deleting a run also removes
+ * its step checkpoints.
+ */
+export interface PrunableStore {
+  listRuns(): RunRecord[];
+  deleteRun(runId: string): void;
+}
+
 /** Atomic file write (temp + rename) so a crash mid-write can't truncate state. */
 function atomicWrite(path: string, data: string): void {
   mkdirSync(dirname(path), { recursive: true });
@@ -38,7 +48,7 @@ function atomicWrite(path: string, data: string): void {
 }
 
 /** Zero-dependency in-memory store — used by tests and ephemeral runs. */
-export class MemoryStore implements Store, RunQueryStore {
+export class MemoryStore implements Store, RunQueryStore, PrunableStore {
   private runs = new Map<string, RunRecord>();
   private steps = new Map<string, StepRecord>();
   private key(runId: string, nodeId: string) {
@@ -65,6 +75,15 @@ export class MemoryStore implements Store, RunQueryStore {
   getRunByIdempotencyKey(key: string) {
     return [...this.runs.values()].find((r) => r.idempotencyKey === key);
   }
+  listRuns() {
+    return [...this.runs.values()];
+  }
+  deleteRun(runId: string) {
+    this.runs.delete(runId);
+    for (const key of [...this.steps.keys()]) {
+      if (key.startsWith(`${runId}::`)) this.steps.delete(key);
+    }
+  }
 }
 
 interface FileShape {
@@ -73,7 +92,7 @@ interface FileShape {
 }
 
 /** JSON-file store: durable across process restarts, good enough for dev. */
-export class JsonStore implements Store, RunQueryStore {
+export class JsonStore implements Store, RunQueryStore, PrunableStore {
   private data: FileShape = { runs: {}, steps: {} };
 
   constructor(private readonly path = join(".flowdock", "state.json")) {
@@ -113,6 +132,16 @@ export class JsonStore implements Store, RunQueryStore {
   }
   getRunByIdempotencyKey(key: string) {
     return Object.values(this.data.runs).find((r) => r.idempotencyKey === key);
+  }
+  listRuns() {
+    return Object.values(this.data.runs);
+  }
+  deleteRun(runId: string) {
+    delete this.data.runs[runId];
+    for (const key of Object.keys(this.data.steps)) {
+      if (key.startsWith(`${runId}::`)) delete this.data.steps[key];
+    }
+    this.flush();
   }
 }
 
