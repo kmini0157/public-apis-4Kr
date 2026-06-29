@@ -13,7 +13,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { resolve, referencedNodes } from "./expr.ts";
+import { resolve, referencedNodes, interpolate, evalExpr, isTruthy } from "./expr.ts";
 import { RateLimiter } from "./ratelimit.ts";
 import { maskingLogger } from "./vault.ts";
 import { enforceEgress, type EgressResolver } from "./sandbox.ts";
@@ -77,6 +77,7 @@ export function topoSort(nodes: NodeSpec[]): NodeSpec[] {
   for (const n of nodes) {
     const d = new Set<string>(n.needs ?? []);
     for (const ref of referencedNodes(n.with ?? null)) d.add(ref);
+    if (n.if !== undefined) for (const ref of referencedNodes(n.if)) d.add(ref);
     for (const ref of d) {
       if (!byId.has(ref)) throw new Error(`Node '${n.id}' references unknown node '${ref}'`);
     }
@@ -217,6 +218,26 @@ export class Engine {
     };
   }
 
+  /** Dependencies of a node (explicit needs + expression refs in with/if). */
+  private depsOf(node: NodeSpec): Set<string> {
+    const d = new Set<string>(node.needs ?? []);
+    for (const ref of referencedNodes(node.with ?? null)) d.add(ref);
+    if (node.if !== undefined) for (const ref of referencedNodes(node.if)) d.add(ref);
+    return d;
+  }
+
+  /** Return a reason to skip the node (dependency skipped or `if` falsy), else null. */
+  private skipReason(node: NodeSpec, skipped: Set<string>, scope: Record<string, Json>): string | null {
+    for (const dep of this.depsOf(node)) {
+      if (skipped.has(dep)) return `dependency '${dep}' was skipped`;
+    }
+    if (node.if !== undefined) {
+      const value = node.if.includes("{{") ? interpolate(node.if, scope) : evalExpr(node.if, scope);
+      if (!isTruthy(value)) return "if condition was falsy";
+    }
+    return null;
+  }
+
   /** Execute a workflow end-to-end (or resume one via opts.runId). */
   async run(workflow: Workflow, opts: RunInput = {}): Promise<RunResult> {
     const order = topoSort(workflow.nodes);
@@ -248,12 +269,35 @@ export class Engine {
     };
 
     let failed = false;
+    const skipped = new Set<string>();
     for (const node of order) {
       const existing = this.store.getStep(runId, node.id);
       if (existing?.status === "succeeded") {
         this.logSink(`[${node.id}] skipped (checkpoint)`);
         continue;
       }
+      if (existing?.status === "skipped") {
+        skipped.add(node.id);
+        continue;
+      }
+
+      // Cascade: skip when a dependency was skipped, or the `if` guard is falsy.
+      const skipReason = this.skipReason(node, skipped, scope);
+      if (skipReason) {
+        const step: StepRecord = {
+          runId,
+          nodeId: node.id,
+          status: "skipped",
+          attempts: 0,
+          latencyMs: 0,
+          error: skipReason,
+        };
+        this.store.saveStep(step);
+        skipped.add(node.id);
+        this.logSink(`[${node.id}] skipped (${skipReason})`);
+        continue;
+      }
+
       const step = await this.runNode(node, runId, scope);
       this.store.saveStep(step);
       if (step.status === "succeeded") {

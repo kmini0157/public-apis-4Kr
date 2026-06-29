@@ -37,6 +37,11 @@ export function parseWorkflow(text: string): Workflow {
       spec.needs = node.needs as string[];
     }
     if (node.retry !== undefined) spec.retry = node.retry as NodeSpec["retry"];
+    if (node.if !== undefined) {
+      if (typeof node.if !== "string") throw new Error(`nodes[${i}].if must be a string expression`);
+      spec.if = node.if;
+    }
+    if (node.mock !== undefined) spec.mock = node.mock as NodeSpec["mock"];
     return spec;
   });
 

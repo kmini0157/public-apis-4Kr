@@ -1,0 +1,34 @@
+# Memory layer (RAG ingestion): extract → embed → store in a vector DB.
+# Demonstrates the data-accumulation moat and conditional `if`.
+# Needs creds for embed/vector (.flowdock/credentials.json) + a running Qdrant.
+name: 메모리 적재 (RAG ingest)
+on:
+  webhook: true
+nodes:
+  - id: fetch
+    uses: jina.reader
+    with:
+      url: "{{ trigger.body.url }}"
+
+  - id: embed
+    uses: embed
+    # only embed when extraction produced text (conditional skip otherwise)
+    if: "{{ nodes.fetch.output.text }}"
+    with:
+      text: "{{ nodes.fetch.output.text }}"
+
+  - id: store
+    uses: vector.upsert
+    with:
+      collection: "memory"
+      id: "{{ trigger.body.url }}"
+      vector: "{{ nodes.embed.output.vector }}"
+      payload:
+        url: "{{ trigger.body.url }}"
+        text: "{{ nodes.fetch.output.text }}"
+
+  - id: notify
+    uses: ntfy.publish
+    with:
+      topic: "{{ trigger.body.topic ?? 'flowdock-memory' }}"
+      message: "stored {{ trigger.body.url }} ({{ nodes.embed.output.dimensions }} dims)"

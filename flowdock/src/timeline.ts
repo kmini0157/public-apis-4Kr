@@ -24,6 +24,7 @@ const MARK: Record<string, string> = {
   failed: "✗",
   running: "…",
   queued: "·",
+  skipped: "⊘",
 };
 
 /** ASCII timeline for the terminal. Steps are shown in execution order. */

@@ -123,6 +123,47 @@ test("failure stops the run; resume skips checkpointed nodes", async () => {
   assert.equal((second.outputs.b as any).value, "B");
 });
 
+test("a falsy `if` skips the node and cascades to its dependents", async () => {
+  const order: string[] = [];
+  const engine = new Engine({
+    registry: new ConnectorRegistry(recorder(order)),
+    store: new MemoryStore(),
+  });
+  const result = await engine.run({
+    name: "cond",
+    nodes: [
+      { id: "a", uses: "a" },
+      { id: "b", uses: "b", if: "false", with: { from: "{{ nodes.a.output.value }}" } },
+      { id: "c", uses: "c", with: { from: "{{ nodes.b.output.value }}" } }, // depends on b
+    ],
+  });
+  assert.equal(result.status, "succeeded"); // skips are not failures
+  assert.deepEqual(order, ["a"]); // b and c never executed
+  const byId = Object.fromEntries(result.steps.map((s) => [s.nodeId, s.status]));
+  assert.equal(byId.a, "succeeded");
+  assert.equal(byId.b, "skipped");
+  assert.equal(byId.c, "skipped"); // cascade
+});
+
+test("a truthy `if` (from upstream output) runs the node", async () => {
+  const order: string[] = [];
+  const reg = new ConnectorRegistry([
+    { id: "flag", title: "flag", async execute() { return { go: true }; } },
+    { id: "work", title: "work", async execute() { order.push("work"); return { done: true }; } },
+  ]);
+  const engine = new Engine({ registry: reg, store: new MemoryStore() });
+  const result = await engine.run({
+    name: "cond2",
+    nodes: [
+      { id: "flag", uses: "flag" },
+      { id: "work", uses: "work", if: "{{ nodes.flag.output.go }}" },
+    ],
+  });
+  assert.equal(result.status, "succeeded");
+  assert.deepEqual(order, ["work"]);
+  assert.equal((result.outputs.work as { done: boolean }).done, true);
+});
+
 test("trigger payload is available to nodes", async () => {
   const seen: unknown[] = [];
   const cap: Connector = {

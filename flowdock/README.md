@@ -5,7 +5,7 @@
 
 > 한 줄: 여러 무료 API를 노드로 연결해 YAML 한 파일로 자동화한다. 엔진이 **순서·재시도·레이트리밋·체크포인트·크리덴셜 주입**을 다 처리하므로, 작성자는 비즈니스 로직만 짠다. 그리고 워크플로·크리덴셜·실행이력이 쌓일수록 떠나기 어려워진다.
 
-현재 **84개 테스트 전부 통과 (네트워크 불필요)**, `tsc --noEmit` 클린.
+현재 **93개 테스트 전부 통과 (네트워크 불필요)**, `tsc --noEmit` 클린.
 
 ## 구현된 기능
 
@@ -18,7 +18,10 @@
 | 표현식 | `eval` 없는 안전 파서 (경로·`??`·리터럴) |
 | 크리덴셜 볼트 | AES-256-GCM 봉투 암호화 + 로그 마스킹 |
 | 레이트리밋 | 커넥터별 토큰버킷 (무료 티어 보호) |
-| 커넥터 | echo, http.request, jina.reader, llm.chat(Pollinations), pollinations.image, ntfy.publish, resend.email |
+| **조건부 실행** | 노드 `if` 표현식 → falsy면 노드+의존 노드 **cascade skip** |
+| 커넥터(13) | echo · http.request · jina.reader · llm.chat(Pollinations) · pollinations.image · ntfy.publish · resend.email · **tts.speak**(키리스) · **slack.webhook** · **discord.webhook** · **embed** · **vector.upsert** · **vector.query**(Qdrant) |
+
+> **메모리 레이어(RAG)**: `jina.reader → embed → vector.upsert`로 무엇이든 빨아들여 저장하고 `embed → vector.query`로 의미검색. 쌓일수록 떠나기 어려운 데이터 축적 락인 (`examples/memory-ingest.yaml`).
 
 ### M1 — 개발자 경험 (DX)
 | 기능 | 명령 | 핵심 |
@@ -57,7 +60,7 @@
 
 ```bash
 npm install
-npm test                                    # 84개 테스트 (오프라인)
+npm test                                    # 93개 테스트 (오프라인)
 node --import tsx src/cli.ts                 # 전체 명령 도움말
 ```
 

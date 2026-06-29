@@ -103,6 +103,9 @@ export interface NodeSpec {
   /** Explicit dependencies in addition to those inferred from expressions. */
   needs?: string[];
   retry?: RetrySpec;
+  /** Conditional guard expression; if it evaluates falsy the node (and its
+   *  dependents) are skipped, e.g. `{{ nodes.check.output.changed }}`. */
+  if?: string;
   /** Sample output used by `flowdock run --dry-run` instead of calling the connector. */
   mock?: Json;
 }
@@ -129,8 +132,9 @@ export interface Workflow {
   nodes: NodeSpec[];
 }
 
-/** Lifecycle status shared by runs and steps. */
-export type RunStatus = "queued" | "running" | "succeeded" | "failed";
+/** Lifecycle status shared by runs and steps. `skipped` = a conditional `if`
+ *  was falsy, or an upstream dependency was skipped. */
+export type RunStatus = "queued" | "running" | "succeeded" | "failed" | "skipped";
 
 /** Persisted result of a single node execution — the durability checkpoint. */
 export interface StepRecord {

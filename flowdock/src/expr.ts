@@ -207,6 +207,15 @@ export function resolve(value: Json, scope: Scope): Json {
   return value;
 }
 
+/** Truthiness for conditional `if` guards. Strings "", "false", "0" are falsy. */
+export function isTruthy(v: Json): boolean {
+  if (v === null || v === undefined) return false;
+  if (typeof v === "boolean") return v;
+  if (typeof v === "number") return v !== 0;
+  if (typeof v === "string") return !(v === "" || v === "false" || v === "0");
+  return true; // non-empty objects/arrays
+}
+
 /** Collect node ids referenced by `{{ nodes.<id>... }}` for DAG edge inference. */
 export function referencedNodes(value: Json, acc = new Set<string>()): Set<string> {
   if (typeof value === "string") {

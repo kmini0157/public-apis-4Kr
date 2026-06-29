@@ -166,6 +166,162 @@ const resendEmail: Connector = {
   },
 };
 
+/** Keyless TTS — returns a stable audio URL (StreamElements), like pollinations.image. */
+const ttsSpeak: Connector = {
+  id: "tts.speak",
+  title: "Text-to-Speech (keyless)",
+  inputs: {
+    type: "object",
+    required: ["text"],
+    properties: { text: { type: "string" }, voice: { type: "string" } },
+  },
+  outputs: { type: "object", properties: { audio_url: { type: "string" } } },
+  async execute(input) {
+    const text = str(input, "text");
+    const voice = opt(input, "voice") ?? "Brian";
+    return {
+      audio_url: `https://api.streamelements.com/kappa/v2/speech?voice=${encodeURIComponent(voice)}&text=${encodeURIComponent(text)}`,
+    };
+  },
+};
+
+/** Post a message to a Slack incoming webhook URL. */
+const slackWebhook: Connector = {
+  id: "slack.webhook",
+  title: "Slack Incoming Webhook",
+  auth: { kind: "apiKey", fields: ["webhook_url"] },
+  rateLimit: { requests: 1, intervalMs: 1000 },
+  inputs: {
+    type: "object",
+    required: ["text"],
+    properties: { text: { type: "string" }, webhook_url: { type: "string" } },
+  },
+  async execute(input, ctx) {
+    const url = opt(input, "webhook_url") ?? ctx.creds.webhook_url;
+    if (!url) throw new Error("slack.webhook requires 'webhook_url' (input or credential)");
+    const res = await ctx.fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: str(input, "text") }),
+    });
+    if (!res.ok) throw new Error(`Slack webhook ${res.status}`);
+    return { ok: true };
+  },
+};
+
+/** Post a message to a Discord webhook URL. */
+const discordWebhook: Connector = {
+  id: "discord.webhook",
+  title: "Discord Webhook",
+  auth: { kind: "apiKey", fields: ["webhook_url"] },
+  rateLimit: { requests: 1, intervalMs: 1000 },
+  inputs: {
+    type: "object",
+    required: ["content"],
+    properties: { content: { type: "string" }, webhook_url: { type: "string" } },
+  },
+  async execute(input, ctx) {
+    const url = opt(input, "webhook_url") ?? ctx.creds.webhook_url;
+    if (!url) throw new Error("discord.webhook requires 'webhook_url' (input or credential)");
+    const res = await ctx.fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ content: str(input, "content") }),
+    });
+    if (!res.ok) throw new Error(`Discord webhook ${res.status}`);
+    return { ok: true };
+  },
+};
+
+/** Embed text into a vector via an OpenAI-compatible /embeddings endpoint. */
+const embed: Connector = {
+  id: "embed",
+  title: "Text Embedding",
+  auth: { kind: "apiKey", fields: ["apiKey"] },
+  rateLimit: { requests: 5, intervalMs: 1000 },
+  inputs: {
+    type: "object",
+    required: ["text"],
+    properties: { text: { type: "string" }, model: { type: "string" }, base_url: { type: "string" } },
+  },
+  outputs: { type: "object", properties: { vector: { type: "array" }, dimensions: { type: "number" } } },
+  async execute(input, ctx) {
+    const base = opt(input, "base_url") ?? "https://api.openai.com/v1";
+    const model = opt(input, "model") ?? "text-embedding-3-small";
+    const headers: Record<string, string> = { "content-type": "application/json" };
+    if (ctx.creds.apiKey) headers.Authorization = `Bearer ${ctx.creds.apiKey}`;
+    const res = await ctx.fetch(`${base}/embeddings`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ input: str(input, "text"), model }),
+    });
+    if (!res.ok) throw new Error(`embed ${res.status}`);
+    const data = (await res.json()) as { data?: Array<{ embedding: number[] }> };
+    const vector = data.data?.[0]?.embedding ?? [];
+    return { vector, dimensions: vector.length };
+  },
+};
+
+/** Upsert a point into a Qdrant collection (the memory-layer write path). */
+const vectorUpsert: Connector = {
+  id: "vector.upsert",
+  title: "Vector Upsert (Qdrant)",
+  auth: { kind: "apiKey", fields: ["apiKey"] },
+  rateLimit: { requests: 10, intervalMs: 1000 },
+  inputs: {
+    type: "object",
+    required: ["collection", "id", "vector"],
+    properties: { base_url: { type: "string" }, collection: { type: "string" }, vector: { type: "array" } },
+  },
+  outputs: { type: "object", properties: { status: { type: "string" } } },
+  async execute(input, ctx) {
+    const inp = input as Record<string, Json>;
+    const base = opt(input, "base_url") ?? "http://localhost:6333";
+    const collection = str(input, "collection");
+    const headers: Record<string, string> = { "content-type": "application/json" };
+    if (ctx.creds.apiKey) headers["api-key"] = ctx.creds.apiKey;
+    const point = { id: inp.id, vector: inp.vector, payload: inp.payload ?? {} };
+    const res = await ctx.fetch(`${base}/collections/${encodeURIComponent(collection)}/points`, {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ points: [point] }),
+    });
+    if (!res.ok) throw new Error(`vector.upsert ${res.status}`);
+    const data = (await res.json()) as { status?: string };
+    return { status: data.status ?? "ok" };
+  },
+};
+
+/** Similarity search over a Qdrant collection (the memory-layer read path). */
+const vectorQuery: Connector = {
+  id: "vector.query",
+  title: "Vector Query (Qdrant)",
+  auth: { kind: "apiKey", fields: ["apiKey"] },
+  rateLimit: { requests: 10, intervalMs: 1000 },
+  inputs: {
+    type: "object",
+    required: ["collection", "vector"],
+    properties: { base_url: { type: "string" }, collection: { type: "string" }, vector: { type: "array" }, limit: { type: "integer" } },
+  },
+  outputs: { type: "object", properties: { matches: { type: "array" } } },
+  async execute(input, ctx) {
+    const inp = input as Record<string, Json>;
+    const base = opt(input, "base_url") ?? "http://localhost:6333";
+    const collection = str(input, "collection");
+    const limit = Number(opt(input, "limit") ?? "5");
+    const headers: Record<string, string> = { "content-type": "application/json" };
+    if (ctx.creds.apiKey) headers["api-key"] = ctx.creds.apiKey;
+    const res = await ctx.fetch(`${base}/collections/${encodeURIComponent(collection)}/points/search`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ vector: inp.vector, limit, with_payload: true }),
+    });
+    if (!res.ok) throw new Error(`vector.query ${res.status}`);
+    const data = (await res.json()) as { result?: Json[] };
+    return { matches: data.result ?? [] };
+  },
+};
+
 const BUILTINS: Connector[] = [
   echo,
   httpRequest,
@@ -174,6 +330,12 @@ const BUILTINS: Connector[] = [
   pollinationsImage,
   ntfyPublish,
   resendEmail,
+  ttsSpeak,
+  slackWebhook,
+  discordWebhook,
+  embed,
+  vectorUpsert,
+  vectorQuery,
 ];
 
 export interface DynamicMeta {
@@ -232,5 +394,19 @@ export class ConnectorRegistry {
   }
 }
 
-export { echo, httpRequest, jinaReader, llmChat, pollinationsImage, ntfyPublish, resendEmail };
+export {
+  echo,
+  httpRequest,
+  jinaReader,
+  llmChat,
+  pollinationsImage,
+  ntfyPublish,
+  resendEmail,
+  ttsSpeak,
+  slackWebhook,
+  discordWebhook,
+  embed,
+  vectorUpsert,
+  vectorQuery,
+};
 export type { ConnectorContext };
