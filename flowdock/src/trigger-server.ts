@@ -13,8 +13,9 @@
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http";
 import { CronScheduler } from "./cron.ts";
 import { buildTimeline } from "./timeline.ts";
-import { WebhookSecretStore, verifySecret, verifyHmac } from "./webhook-secret.ts";
+import { WebhookSecretStore, verifySecret, verifyHmac, type WebhookSecrets } from "./webhook-secret.ts";
 import { maskingLogger } from "./vault.ts";
+import { SignatureError, type BillingService } from "./billing.ts";
 import type { Engine } from "./engine.ts";
 import type { Store, RunQueryStore } from "./store.ts";
 import type { Json, WebhookTrigger, Workflow } from "./types.ts";
@@ -36,7 +37,7 @@ function webhookConfig(wf: Workflow): WebhookTrigger | undefined {
 
 export class TriggerServer {
   private server: Server | undefined;
-  private readonly secrets: WebhookSecretStore;
+  private readonly secrets: WebhookSecrets;
   private readonly scheduler: CronScheduler;
   private readonly byName: Map<string, Workflow>;
   private readonly log: (msg: string, extra?: unknown) => void;
@@ -47,7 +48,8 @@ export class TriggerServer {
     private readonly engine: Engine,
     private readonly store: Store & RunQueryStore,
     private readonly config: TriggerServerConfig = {},
-    secrets?: WebhookSecretStore,
+    secrets?: WebhookSecrets,
+    private readonly billing?: BillingService,
   ) {
     this.byName = new Map(workflows.map((w) => [w.name, w]));
     this.secrets = secrets ?? new WebhookSecretStore();
@@ -115,6 +117,28 @@ export class TriggerServer {
       if (req.method === "GET" && runMatch) {
         const status = this.getRunStatus(decodeURIComponent(runMatch[1]!));
         return status ? send(200, status as unknown as Json) : send(404, { error: "run not found" });
+      }
+
+      if (url.pathname === "/billing/webhook") {
+        if (req.method !== "POST") return send(405, { error: "use POST" });
+        if (!this.billing) return send(404, { error: "billing not configured" });
+        const raw = (await this.readBody(req)).toString("utf8");
+        const sig = req.headers["stripe-signature"];
+        if (typeof sig !== "string") return send(400, { error: "missing Stripe-Signature" });
+        try {
+          const result = this.billing.handleWebhook(raw, sig, Math.floor((this.config.clock ?? Date.now)() / 1000));
+          this.log(`billing: ${result.type} -> ${result.applied ? result.plan : "no-op"}`);
+          return send(200, {
+            received: true,
+            type: result.type,
+            applied: result.applied,
+            ...(result.plan ? { plan: result.plan } : {}),
+            ...(result.reason ? { reason: result.reason } : {}),
+          });
+        } catch (err) {
+          if (err instanceof SignatureError) return send(400, { error: err.message });
+          throw err;
+        }
       }
 
       const hookMatch = /^\/hooks\/([^/]+)\/([^/]+)$/.exec(url.pathname);

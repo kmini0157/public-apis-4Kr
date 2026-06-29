@@ -77,6 +77,9 @@ export interface ConnectorManifest {
   version: string;
   /** Set once the connector passes verification (badge). */
   verified?: boolean;
+  /** Hosts this connector is permitted to reach (egress allowlist for sandboxing).
+   *  Supports exact ("api.x.com") and suffix wildcard ("*.x.com"). */
+  allowedHosts?: string[];
   keywords?: string[];
   description?: string;
   homepage?: string;

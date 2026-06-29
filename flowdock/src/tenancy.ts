@@ -39,11 +39,20 @@ export interface Member {
   role: Role;
 }
 
+/** Billing linkage to the payment provider (Stripe). */
+export interface TenantBilling {
+  customerId?: string;
+  subscriptionId?: string;
+  /** Mirror of the provider subscription status (active/canceled/past_due...). */
+  status?: string;
+}
+
 export interface Tenant {
   id: string;
   name: string;
   plan: PlanId;
   members: Member[];
+  billing?: TenantBilling;
 }
 
 export class SeatLimitError extends Error {}
@@ -79,6 +88,11 @@ export class TenantStore {
   setPlan(plan: PlanId): void {
     getPlan(plan); // validate
     this.tenant.plan = plan;
+    this.flush();
+  }
+
+  setBilling(billing: TenantBilling): void {
+    this.tenant.billing = { ...this.tenant.billing, ...billing };
     this.flush();
   }
 

@@ -11,6 +11,7 @@ import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { atomicWrite } from "./store.ts";
+import type { Vault, TenantKey } from "./vault.ts";
 
 const ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 
@@ -46,6 +47,17 @@ export function verifyHmac(payload: Buffer, signatureHex: string, secret: string
   return timingSafeEqual(provided, expected);
 }
 
+/**
+ * The interface the trigger server depends on. Two implementations:
+ * plaintext-on-disk (dev tier) and Vault-encrypted (hardened/hosted).
+ */
+export interface WebhookSecrets {
+  ensure(workflowName: string, preset?: string): string;
+  get(workflowName: string): string | undefined;
+  markUsed(workflowName: string): void;
+  list(): Array<{ name: string; createdAt: number; lastUsed?: number }>;
+}
+
 interface WebhookEntry {
   secret: string;
   createdAt: number;
@@ -55,7 +67,7 @@ interface WebhookEntry {
 type WebhookFile = Record<string, WebhookEntry>;
 
 /** Per-project webhook secret persistence (plaintext, dev tier). */
-export class WebhookSecretStore {
+export class WebhookSecretStore implements WebhookSecrets {
   private data: WebhookFile = {};
   constructor(
     private readonly path = join(".flowdock", "webhooks.json"),
@@ -83,6 +95,69 @@ export class WebhookSecretStore {
   }
   get(workflowName: string): string | undefined {
     return this.data[workflowName]?.secret;
+  }
+  markUsed(workflowName: string): void {
+    const e = this.data[workflowName];
+    if (e) {
+      e.lastUsed = this.clock();
+      this.flush();
+    }
+  }
+  list(): Array<{ name: string; createdAt: number; lastUsed?: number }> {
+    return Object.entries(this.data).map(([name, e]) => ({
+      name,
+      createdAt: e.createdAt,
+      ...(e.lastUsed ? { lastUsed: e.lastUsed } : {}),
+    }));
+  }
+}
+
+interface VaultEntry {
+  ciphertext: string;
+  createdAt: number;
+  lastUsed?: number;
+}
+
+/**
+ * Vault-encrypted webhook secrets (hardened tier). Secrets are sealed with the
+ * tenant data key (envelope encryption), so the on-disk file never contains a
+ * plaintext secret. Requires a Vault + tenant key (FLOWDOCK_MASTER_KEY).
+ */
+export class VaultWebhookSecretStore implements WebhookSecrets {
+  private data: Record<string, VaultEntry> = {};
+  constructor(
+    private readonly vault: Vault,
+    private readonly tenantKey: TenantKey,
+    private readonly path = join(".flowdock", "webhooks-vault.json"),
+    private readonly clock: () => number = () => Date.now(),
+  ) {
+    if (existsSync(path)) {
+      try {
+        this.data = JSON.parse(readFileSync(path, "utf8")) as Record<string, VaultEntry>;
+      } catch {
+        this.data = {};
+      }
+    }
+  }
+  private flush() {
+    if (this.path) atomicWrite(this.path, JSON.stringify(this.data, null, 2));
+  }
+  private decrypt(name: string): string | undefined {
+    const e = this.data[name];
+    if (!e) return undefined;
+    return this.vault.openSecret(this.tenantKey, { connector: "webhook", name, ciphertext: e.ciphertext });
+  }
+  ensure(workflowName: string, preset?: string): string {
+    const existing = this.decrypt(workflowName);
+    if (existing) return existing;
+    const secret = preset ?? generateSecret();
+    const sealed = this.vault.sealSecret(this.tenantKey, "webhook", workflowName, secret);
+    this.data[workflowName] = { ciphertext: sealed.ciphertext, createdAt: this.clock() };
+    this.flush();
+    return secret;
+  }
+  get(workflowName: string): string | undefined {
+    return this.decrypt(workflowName);
   }
   markUsed(workflowName: string): void {
     const e = this.data[workflowName];

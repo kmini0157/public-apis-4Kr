@@ -221,6 +221,22 @@ run_steps(id, run_id, node_id, status, input_ref, output_ref, latency_ms, attemp
 
 ---
 
+## 10. 운영 하드닝 (구현됨)
+
+| 영역 | 구현 | 모듈 |
+|---|---|---|
+| **결제** | Stripe 웹훅 서명검증(HMAC + 타임스탬프 리플레이 방어) → 이벤트→플랜 매핑. checkout/subscription updated·deleted 처리. `/billing/webhook` 라우트. | `src/billing.ts` |
+| **웹훅 시크릿 암호화** | 평문(dev) 대신 볼트 봉투암호화로 디스크에 ciphertext만 저장. `WebhookSecrets` 인터페이스로 서버는 둘 다 수용. `serve --vault-secrets`(+`FLOWDOCK_MASTER_KEY`). | `src/webhook-secret.ts` |
+| **커넥터 egress 샌드박스** | 커뮤니티 커넥터의 네트워크를 manifest `allowedHosts` 허용목록으로 제한(엔진 주입 fetch에서 강제). 빌트인·verified=신뢰, 미검증+미선언=차단(fail-closed). `serve --sandbox`. | `src/sandbox.ts` |
+
+### 남은 신뢰 경계 (정직한 한계)
+
+- **egress 샌드박스는 *네트워크 egress*만 막는다, 코드 실행이 아니다.** 완전히 신뢰할 수 없는 커넥터 코드는 프로세스 수준 격리(worker_threads / V8 isolate / microVM)가 필요하다. 현재 층은 자격증명 유출·SSRF의 폭발 반경을 실질적으로 줄이지만, 결정적 공격자에 대한 완전한 격리는 아니다.
+- **결제 멱등성**: Stripe는 동일 이벤트를 재전송할 수 있다 — 운영에서는 `event.id` 멱등성 저장이 추가로 필요(서명·리플레이 방어는 구현됨).
+- **볼트 마스터키 관리**: `FLOWDOCK_MASTER_KEY`는 KMS/시크릿 매니저에서 주입·로테이션해야 한다.
+
+---
+
 ## 부록 A. 워크플로 YAML 예시 (Workflows-as-Code)
 
 ```yaml

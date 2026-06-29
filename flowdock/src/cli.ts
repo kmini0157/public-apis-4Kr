@@ -14,7 +14,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { loadWorkflow, parseWorkflow } from "./loader.ts";
 import { Engine, topoSort } from "./engine.ts";
-import { JsonStore } from "./store.ts";
+import { JsonStore, atomicWrite } from "./store.ts";
 import { ConnectorRegistry } from "./connectors/index.ts";
 import { loadConnectors } from "./loader-dynamic.ts";
 import { loadProjectConfig, type ProjectConfig } from "./project.ts";
@@ -25,7 +25,10 @@ import { renderTimeline, buildTimeline } from "./timeline.ts";
 import { TriggerServer } from "./trigger-server.ts";
 import { scaffoldConnector } from "./sdk.ts";
 import { listTemplates, useTemplate } from "./templates.ts";
-import { WebhookSecretStore } from "./webhook-secret.ts";
+import { WebhookSecretStore, VaultWebhookSecretStore, type WebhookSecrets } from "./webhook-secret.ts";
+import { buildEgressResolver, type EgressResolver as EngineEgress } from "./sandbox.ts";
+import { Vault, type TenantKey } from "./vault.ts";
+import { BillingService } from "./billing.ts";
 import { TenantStore, can, type Role, type Tenant } from "./tenancy.ts";
 import { UsageMeter } from "./usage.ts";
 import { Workspace, PermissionError, QuotaError, type Actor } from "./workspace.ts";
@@ -79,13 +82,54 @@ async function buildRegistry(project: ProjectConfig): Promise<ConnectorRegistry>
   return registry;
 }
 
-function buildEngine(registry: ConnectorRegistry, store: JsonStore = new JsonStore()): Engine {
+function buildEngine(
+  registry: ConnectorRegistry,
+  store: JsonStore = new JsonStore(),
+  egress?: EngineEgress,
+): Engine {
   return new Engine({
     registry,
     store,
     secrets: collectSecrets(),
     creds: credsProvider(),
+    ...(egress ? { egress } : {}),
   });
+}
+
+/** Load (or mint + persist) the sealed tenant data key for vault-backed secrets. */
+function loadOrCreateTenantKey(vault: Vault): TenantKey {
+  const path = join(".flowdock", "tenant-key.json");
+  if (existsSync(path)) return JSON.parse(readFileSync(path, "utf8")) as TenantKey;
+  const tk = vault.createTenantKey();
+  atomicWrite(path, JSON.stringify(tk, null, 2));
+  return tk;
+}
+
+/** Choose the webhook secret store: vault-encrypted (hardened) or plaintext (dev). */
+function buildWebhookSecrets(useVault: boolean): WebhookSecrets | undefined {
+  if (!useVault) return undefined; // server defaults to plaintext WebhookSecretStore
+  if (!process.env.FLOWDOCK_MASTER_KEY) {
+    console.error("--vault-secrets requires FLOWDOCK_MASTER_KEY (base64, 32 bytes)");
+    process.exit(1);
+  }
+  const vault = new Vault();
+  return new VaultWebhookSecretStore(vault, loadOrCreateTenantKey(vault));
+}
+
+/** Build the Stripe billing service when a webhook signing secret is configured. */
+function buildBilling(): BillingService | undefined {
+  const secret = process.env.STRIPE_WEBHOOK_SECRET;
+  if (!secret) return undefined;
+  let priceToPlan: Record<string, "free" | "pro" | "team"> | undefined;
+  if (process.env.FLOWDOCK_STRIPE_PRICES) {
+    try {
+      priceToPlan = JSON.parse(process.env.FLOWDOCK_STRIPE_PRICES) as typeof priceToPlan;
+    } catch {
+      console.error("FLOWDOCK_STRIPE_PRICES must be JSON {priceId: plan}");
+      process.exit(1);
+    }
+  }
+  return new BillingService(new TenantStore(), secret, priceToPlan ? { priceToPlan } : {});
 }
 
 /** Load every *.yaml in a directory into Workflows (skips invalid, warns). */
@@ -267,18 +311,33 @@ async function main() {
     case "serve": {
       const project = loadProjectConfig();
       const registry = await buildRegistry(project);
-      const engine = buildEngine(registry);
       const store = new JsonStore();
+      // Hosted hardening: --sandbox enforces per-connector egress allowlists.
+      const sandboxed = flags.sandbox === "true";
+      const egress = sandboxed ? buildEgressResolver(registry, { strict: true }) : undefined;
+      const engine = buildEngine(registry, store, egress);
       const workflows = loadWorkflowsDir(join(project.root, project.workflowsDir));
       const portFlag = numFlag(flags.port, "port");
       const bodyLimit = numFlag(flags["body-limit"], "body-limit");
-      const server = new TriggerServer(workflows, engine, store, {
-        ...(portFlag !== undefined ? { port: portFlag } : {}),
-        ...(flags.host ? { host: flags.host } : {}),
-        ...(bodyLimit !== undefined ? { bodyLimitBytes: bodyLimit } : {}),
-      });
+      // Hosted hardening: encrypt webhook secrets at rest when a master key is present.
+      const secrets = buildWebhookSecrets(flags["vault-secrets"] === "true");
+      // Hosted hardening: Stripe billing webhook if a signing secret is configured.
+      const billing = buildBilling();
+      const server = new TriggerServer(
+        workflows,
+        engine,
+        store,
+        {
+          ...(portFlag !== undefined ? { port: portFlag } : {}),
+          ...(flags.host ? { host: flags.host } : {}),
+          ...(bodyLimit !== undefined ? { bodyLimitBytes: bodyLimit } : {}),
+        },
+        secrets,
+        billing,
+      );
       const { host, port } = await server.listen();
       console.error(`▶ FlowDock serving ${workflows.length} workflow(s) on http://${host}:${port}`);
+      console.error(`  sandbox: ${sandboxed ? "on (strict egress)" : "off"} · secrets: ${secrets ? "vault" : "plaintext"} · billing: ${billing ? "on" : "off"}`);
       for (const h of server.hookUrls(`http://${host}:${port}`)) console.error(`  hook: ${h.workflow} → ${h.url}`);
       console.error("  (Ctrl-C to stop)");
       process.on("SIGINT", () => {
@@ -458,7 +517,8 @@ async function main() {
           "  history <name> [--limit N]      version history",
           "",
           "Triggers:",
-          "  serve [--port][--host]          run webhook + cron trigger server",
+          "  serve [--port][--host][--sandbox][--vault-secrets]",
+          "                                  webhook + cron server (+ /billing/webhook)",
           "  webhooks list                   show webhook secrets",
           "",
           "Ecosystem:",
@@ -485,6 +545,12 @@ async function buildRegistryFrom(dir: string): Promise<ConnectorRegistry> {
   for (const [file, msg] of Object.entries(errors)) console.error(`⚠ connector ${file}: ${msg}`);
   return registry;
 }
+
+// Exit quietly when output is piped to a command that closes early (e.g. `| head`).
+process.stdout.on("error", (err) => {
+  if ((err as NodeJS.ErrnoException).code === "EPIPE") process.exit(0);
+  throw err;
+});
 
 main().catch((err) => {
   console.error(`Error: ${(err as Error).message}`);

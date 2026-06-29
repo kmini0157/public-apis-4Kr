@@ -5,7 +5,7 @@
 
 > 한 줄: 여러 무료 API를 노드로 연결해 YAML 한 파일로 자동화한다. 엔진이 **순서·재시도·레이트리밋·체크포인트·크리덴셜 주입**을 다 처리하므로, 작성자는 비즈니스 로직만 짠다. 그리고 워크플로·크리덴셜·실행이력이 쌓일수록 떠나기 어려워진다.
 
-현재 **73개 테스트 전부 통과 (네트워크 불필요)**, `tsc --noEmit` 클린.
+현재 **84개 테스트 전부 통과 (네트워크 불필요)**, `tsc --noEmit` 클린.
 
 ## 구현된 기능
 
@@ -46,11 +46,18 @@
 
 플랜 한도: **Free** 워크플로 3·실행 100/월·로그 7일·1시트 · **Pro** ∞·1만/월·30일·1시트($19) · **Team** ∞·10만/월·90일·10시트($99).
 
+### 운영 하드닝
+| 기능 | 활성화 | 핵심 |
+|---|---|---|
+| **Stripe 결제** | `STRIPE_WEBHOOK_SECRET` env | 서명검증(HMAC+리플레이) → `/billing/webhook` 이벤트가 플랜 변경 |
+| **볼트 웹훅 시크릿** | `serve --vault-secrets` (+`FLOWDOCK_MASTER_KEY`) | 시크릿을 봉투암호화해 디스크엔 ciphertext만 |
+| **커넥터 샌드박스** | `serve --sandbox` | 미검증 커넥터의 네트워크를 manifest `allowedHosts`로 제한(fail-closed) |
+
 ## 빠른 시작
 
 ```bash
 npm install
-npm test                                    # 73개 테스트 (오프라인)
+npm test                                    # 84개 테스트 (오프라인)
 node --import tsx src/cli.ts                 # 전체 명령 도움말
 ```
 
@@ -75,11 +82,12 @@ node --import tsx src/cli.ts pull                                  # 레지스�
 
 ### 3) 트리거 서버 (웹훅 + cron)
 ```bash
-node --import tsx src/cli.ts serve --port 8787
+node --import tsx src/cli.ts serve --port 8787              # 기본
+node --import tsx src/cli.ts serve --sandbox --vault-secrets # 하드닝 모드
 # 출력된 hook URL로 POST:
 curl -X POST 'http://127.0.0.1:8787/hooks/<wf>/<secret>' \
      -H 'content-type: application/json' -d '{"url":"https://example.com"}'
-# 상태: GET /runs/{id}, /workflows, /healthz
+# 상태: GET /runs/{id}, /workflows, /healthz · 결제: POST /billing/webhook
 ```
 
 ### 4) 커넥터 만들기 & 템플릿
@@ -146,4 +154,4 @@ export default defineConnector({
 
 ## 다음 단계
 
-코어(M0)→DX(M1)→생태계(M2)→수익화(M3)까지 구현 완료. 다음은 운영 하드닝: 실제 결제 연동(Stripe), 볼트 기반 웹훅 시크릿, 호스티드 배포 시 동적 커넥터 샌드박싱, 동시성 풀의 실시간 적용. 설계 배경은 [`ARCHITECTURE.md`](./ARCHITECTURE.md).
+코어(M0)→DX(M1)→생태계(M2)→수익화(M3)→운영 하드닝(결제·볼트 시크릿·샌드박스)까지 구현 완료. 남은 신뢰 경계(완전 격리를 위한 프로세스 수준 샌드박싱, 결제 멱등성 저장, 마스터키 KMS 로테이션)는 [`ARCHITECTURE.md`](./ARCHITECTURE.md) §10 참조.

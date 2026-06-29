@@ -16,6 +16,7 @@ import { randomUUID } from "node:crypto";
 import { resolve, referencedNodes } from "./expr.ts";
 import { RateLimiter } from "./ratelimit.ts";
 import { maskingLogger } from "./vault.ts";
+import { enforceEgress, type EgressResolver } from "./sandbox.ts";
 import type { ConnectorRegistry } from "./connectors/index.ts";
 import type { Store } from "./store.ts";
 import type {
@@ -45,6 +46,8 @@ export interface EngineOptions {
   timeoutMs?: number;
   now?: () => number;
   logSink?: (line: string) => void;
+  /** Per-connector egress policy (sandboxing). Default: allow all (M0 behavior). */
+  egress?: EgressResolver;
 }
 
 export interface RunInput {
@@ -114,6 +117,7 @@ export class Engine {
   private readonly timeoutMs: number;
   private readonly now: () => number;
   private readonly logSink: (line: string) => void;
+  private readonly egress: EgressResolver;
 
   constructor(opts: EngineOptions) {
     this.registry = opts.registry;
@@ -125,6 +129,7 @@ export class Engine {
     this.timeoutMs = opts.timeoutMs ?? 30_000;
     this.now = opts.now ?? (() => Date.now());
     this.logSink = opts.logSink ?? ((l) => console.error(l));
+    this.egress = opts.egress ?? (() => ({ mode: "allow" }));
   }
 
   /** Time-ordered + UUID suffix so rapid same-millisecond fires never collide. */
@@ -135,7 +140,9 @@ export class Engine {
   /** Build the rate-limited, timed-out, masking fetch handed to a connector. */
   private instrumentedFetch(connectorId: string, log: ConnectorContext["log"]): typeof fetch {
     const rateLimit = this.registry.get(connectorId).rateLimit;
+    const policy = this.egress(connectorId);
     const wrapped = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      enforceEgress(input, policy); // sandbox: block disallowed hosts before any I/O
       await this.limiter.acquire(connectorId, rateLimit);
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), this.timeoutMs);
