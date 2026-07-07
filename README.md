@@ -3,7 +3,7 @@
 [![Link Health Check](https://github.com/yybmion/public-apis-4Kr/actions/workflows/link_health_check.yml/badge.svg)](https://github.com/yybmion/public-apis-4Kr/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Korean APIs](https://img.shields.io/badge/Korean%20APIs-270+-blue.svg)](https://github.com/yybmion/public-apis-4Kr)
-[![Global APIs](https://img.shields.io/badge/Global%20APIs-780+-blue.svg)](https://github.com/yybmion/public-apis-4Kr/blob/main/GLOBAL_PUBLIC_APIS_KR.md)
+[![Global APIs](https://img.shields.io/badge/Global%20APIs-1470+-blue.svg)](https://github.com/yybmion/public-apis-4Kr/blob/main/GLOBAL_PUBLIC_APIS_KR.md)
 
 🇺🇸 [English](./README_EN.md) | 🇰🇷 [한국어](./README.md) | 🌏 [글로벌 public API](./GLOBAL_PUBLIC_APIS_KR.md)
 
@@ -12,6 +12,14 @@
 
 
 2026년 최신 정보로 업데이트되었으며, 앞으로도 주기적으로 업데이트 할 예정입니다.
+
+> ### 🔍 API 탐색기 — 검색하며 찾기
+>
+> 1,700개가 넘는 API를 표에서 일일이 스크롤하는 대신, 검색·필터가 되는 탐색기를 사용해보세요.
+>
+> 👉 **[API 탐색기 열기](https://kmini0157.github.io/public-apis-4Kr/)** — 한국 + 글로벌 API 통합 검색, 카테고리/인증 필터, 즐겨찾기, 링크 상태 표시, 다크모드
+>
+> 로컬에서는 [`docs/index.html`](./docs/index.html)을 브라우저로 열면 됩니다. 목록 수정 후에는 `python scripts/build_explorer.py`로 재생성하세요.
 
 > ### 🌍 글로벌 API 리소스
 >

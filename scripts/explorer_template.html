@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Public API kr — API 탐색기</title>
+<meta name="description" content="한국 + 글로벌 공개 API를 한 화면에서 검색하고 필터링하세요.">
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --surface: #ffffff;
+    --surface-2: #eef0f4;
+    --border: #e2e5ea;
+    --text: #1c2333;
+    --text-dim: #5c6577;
+    --accent: #3b5bdb;
+    --accent-soft: #e8edfc;
+    --good: #2f9e44;
+    --bad: #e03131;
+    --star: #f59f00;
+    --shadow: 0 1px 2px rgba(16, 24, 40, .05);
+  }
+  :root[data-theme="dark"] {
+    --bg: #12141a;
+    --surface: #1b1e27;
+    --surface-2: #242836;
+    --border: #2e3342;
+    --text: #e7eaf0;
+    --text-dim: #9aa3b5;
+    --accent: #7791f9;
+    --accent-soft: #232c4d;
+    --good: #51cf66;
+    --bad: #ff6b6b;
+    --star: #ffd43b;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .4);
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Pretendard", "Noto Sans KR", "Malgun Gothic", "Segoe UI", sans-serif;
+    font-size: 15px;
+    line-height: 1.55;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 0 20px; }
+
+  header.site {
+    position: sticky; top: 0; z-index: 10;
+    background: color-mix(in srgb, var(--bg) 88%, transparent);
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--border);
+  }
+  .site-inner { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; padding: 12px 0; }
+  .brand { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 17px; white-space: nowrap; }
+  .brand .logo { font-size: 20px; }
+  .brand a { color: inherit; }
+
+  .searchbox { position: relative; flex: 1 1 260px; min-width: 200px; }
+  .searchbox input {
+    width: 100%; padding: 9px 64px 9px 36px;
+    border: 1px solid var(--border); border-radius: 10px;
+    background: var(--surface); color: var(--text);
+    font: inherit; outline: none;
+  }
+  .searchbox input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .searchbox .icon { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); color: var(--text-dim); pointer-events: none; }
+  .searchbox .kbd {
+    position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
+    font-size: 11px; color: var(--text-dim);
+    border: 1px solid var(--border); border-radius: 5px; padding: 1px 6px;
+    background: var(--surface-2); pointer-events: none;
+  }
+
+  .iconbtn {
+    border: 1px solid var(--border); background: var(--surface); color: var(--text);
+    border-radius: 10px; padding: 8px 11px; cursor: pointer; font-size: 15px; line-height: 1;
+  }
+  .iconbtn:hover { background: var(--surface-2); }
+
+  .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 0 12px; }
+  .tabs { display: flex; gap: 4px; background: var(--surface-2); border-radius: 10px; padding: 3px; }
+  .tabs button {
+    border: 0; background: transparent; color: var(--text-dim);
+    padding: 6px 12px; border-radius: 8px; cursor: pointer; font: inherit; font-size: 13.5px; white-space: nowrap;
+  }
+  .tabs button.active { background: var(--surface); color: var(--text); font-weight: 600; box-shadow: var(--shadow); }
+  .toolbar select {
+    max-width: 240px; padding: 7px 10px;
+    border: 1px solid var(--border); border-radius: 10px;
+    background: var(--surface); color: var(--text); font: inherit; font-size: 13.5px;
+  }
+  .count { margin-left: auto; color: var(--text-dim); font-size: 13px; white-space: nowrap; }
+
+  main { padding: 18px 0 40px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 12px; }
+
+  .card {
+    display: flex; flex-direction: column; gap: 6px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+    padding: 14px 16px; box-shadow: var(--shadow);
+  }
+  .card-top { display: flex; align-items: flex-start; gap: 8px; }
+  .card-top .name { font-weight: 600; font-size: 15px; flex: 1; word-break: break-word; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; }
+  .dot.ok { background: var(--good); }
+  .dot.bad { background: var(--bad); }
+  .card-actions { display: flex; gap: 2px; flex-shrink: 0; }
+  .card-actions button {
+    border: 0; background: transparent; cursor: pointer;
+    font-size: 15px; line-height: 1; padding: 3px 4px; border-radius: 6px; color: var(--text-dim);
+  }
+  .card-actions button:hover { background: var(--surface-2); }
+  .card-actions .fav.on { color: var(--star); }
+  .desc { color: var(--text-dim); font-size: 13.5px; flex: 1; word-break: break-word; }
+  .meta { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 2px; }
+  .badge {
+    font-size: 11.5px; padding: 2px 8px; border-radius: 999px;
+    background: var(--surface-2); color: var(--text-dim); white-space: nowrap;
+  }
+  .badge.cat { background: var(--accent-soft); color: var(--accent); cursor: pointer; }
+  .badge.auth-no { background: color-mix(in srgb, var(--good) 15%, transparent); color: var(--good); }
+  .badge.auth-key { background: color-mix(in srgb, var(--star) 18%, transparent); color: color-mix(in srgb, var(--star) 75%, var(--text)); }
+
+  .more { display: block; margin: 22px auto 0; padding: 10px 26px; font-size: 14px; }
+  .empty { text-align: center; color: var(--text-dim); padding: 60px 0; }
+  .empty .big { font-size: 34px; margin-bottom: 10px; }
+
+  footer.site {
+    border-top: 1px solid var(--border); color: var(--text-dim);
+    font-size: 12.5px; padding: 16px 0 28px;
+  }
+  footer.site .wrap { display: flex; flex-wrap: wrap; gap: 6px 18px; }
+
+  .toast {
+    position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%) translateY(8px);
+    background: var(--text); color: var(--bg);
+    padding: 8px 16px; border-radius: 8px; font-size: 13px;
+    opacity: 0; pointer-events: none; transition: opacity .18s, transform .18s;
+  }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+  @media (max-width: 640px) {
+    .grid { grid-template-columns: 1fr; }
+    .count { margin-left: 0; width: 100%; }
+    .searchbox .kbd { display: none; }
+  }
+</style>
+</head>
+<body>
+<header class="site">
+  <div class="wrap">
+    <div class="site-inner">
+      <div class="brand">
+        <span class="logo">🇰🇷</span>
+        <a href="https://github.com/kmini0157/public-apis-4Kr" target="_blank" rel="noopener">Public API kr</a>
+      </div>
+      <div class="searchbox">
+        <span class="icon">🔎</span>
+        <input id="q" type="search" placeholder="API 이름·설명·카테고리 검색  (예: 날씨, 지도, payment)" autocomplete="off">
+        <span class="kbd">/</span>
+      </div>
+      <button id="themeBtn" class="iconbtn" title="다크/라이트 전환">🌙</button>
+    </div>
+    <div class="toolbar">
+      <div class="tabs" id="tabs"></div>
+      <select id="catSel" title="카테고리 필터"></select>
+      <select id="authSel" title="인증 방식 필터">
+        <option value="">인증: 전체</option>
+        <option value="No">인증 불필요</option>
+        <option value="apiKey">apiKey</option>
+        <option value="OAuth">OAuth</option>
+        <option value="etc">기타</option>
+      </select>
+      <span class="count" id="count"></span>
+    </div>
+  </div>
+</header>
+
+<main class="wrap">
+  <div class="grid" id="grid"></div>
+  <div class="empty" id="empty" hidden>
+    <div class="big">🤔</div>
+    <div>조건에 맞는 API가 없습니다. 검색어나 필터를 바꿔보세요.</div>
+  </div>
+  <button class="iconbtn more" id="moreBtn" hidden></button>
+</main>
+
+<footer class="site">
+  <div class="wrap">
+    <span id="genInfo"></span>
+    <span id="healthInfo"></span>
+    <span>⭐ 즐겨찾기는 이 브라우저에 저장됩니다</span>
+    <a href="https://github.com/kmini0157/public-apis-4Kr" target="_blank" rel="noopener">GitHub에서 목록 기여하기</a>
+  </div>
+</footer>
+
+<div class="toast" id="toast"></div>
+
+<script>
+'use strict';
+const DATA = /*__API_DATA__*/null;
+
+const $ = (id) => document.getElementById(id);
+const PAGE = 240;
+const FAV_KEY = 'pa4kr:favs';
+const THEME_KEY = 'pa4kr:theme';
+
+const apis = DATA.apis.map((a, i) => ({
+  ...a,
+  id: i,
+  key: a.s + '|' + a.u,
+  hay: (a.n + ' ' + a.d + ' ' + a.c).toLowerCase(),
+}));
+
+const state = { tab: 'all', q: '', cat: '', auth: '' };
+let favs = new Set(JSON.parse(localStorage.getItem(FAV_KEY) || '[]'));
+let shown = PAGE;
+let filtered = [];
+
+/* ---------- 테마 ---------- */
+function applyTheme(t) {
+  document.documentElement.dataset.theme = t;
+  $('themeBtn').textContent = t === 'dark' ? '☀️' : '🌙';
+}
+const savedTheme = localStorage.getItem(THEME_KEY);
+applyTheme(savedTheme || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
+$('themeBtn').onclick = () => {
+  const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+  localStorage.setItem(THEME_KEY, next);
+  applyTheme(next);
+};
+
+/* ---------- 탭 ---------- */
+const TABS = [
+  { id: 'all', label: '전체' },
+  { id: 'kr', label: '🇰🇷 한국' },
+  { id: 'global', label: '🌍 글로벌' },
+  { id: 'fav', label: '⭐ 즐겨찾기' },
+];
+function tabCount(id) {
+  if (id === 'all') return apis.length;
+  if (id === 'fav') return favs.size;
+  return apis.filter(a => a.s === id).length;
+}
+function renderTabs() {
+  const box = $('tabs');
+  box.innerHTML = '';
+  for (const t of TABS) {
+    const b = document.createElement('button');
+    b.textContent = `${t.label} ${tabCount(t.id)}`;
+    b.className = state.tab === t.id ? 'active' : '';
+    b.onclick = () => { state.tab = t.id; state.cat = ''; renderCatOptions(); update(); };
+    box.appendChild(b);
+  }
+}
+
+/* ---------- 카테고리 옵션 ---------- */
+function catsOf(source) {
+  const seen = [];
+  for (const a of apis) if (a.s === source && !seen.includes(a.c)) seen.push(a.c);
+  return seen;
+}
+function renderCatOptions() {
+  const sel = $('catSel');
+  sel.innerHTML = '';
+  const all = document.createElement('option');
+  all.value = '';
+  all.textContent = '카테고리: 전체';
+  sel.appendChild(all);
+  const addGroup = (label, source) => {
+    const g = document.createElement('optgroup');
+    g.label = label;
+    for (const c of catsOf(source)) {
+      const o = document.createElement('option');
+      o.value = source + ':' + c;
+      o.textContent = c;
+      g.appendChild(o);
+    }
+    sel.appendChild(g);
+  };
+  const t = state.tab;
+  if (t === 'all' || t === 'fav' || t === 'kr') addGroup('🇰🇷 한국', 'kr');
+  if (t === 'all' || t === 'fav' || t === 'global') addGroup('🌍 글로벌', 'global');
+  sel.value = state.cat;
+  if (sel.value !== state.cat) { state.cat = ''; sel.value = ''; }
+}
+
+/* ---------- 필터링 ---------- */
+function matches(a) {
+  if (state.tab === 'kr' && a.s !== 'kr') return false;
+  if (state.tab === 'global' && a.s !== 'global') return false;
+  if (state.tab === 'fav' && !favs.has(a.key)) return false;
+  if (state.cat && (a.s + ':' + a.c) !== state.cat) return false;
+  if (state.auth) {
+    if (state.auth === 'etc') {
+      if (a.a === 'No' || a.a === 'apiKey' || a.a === 'OAuth') return false;
+    } else if (a.a !== state.auth) return false;
+  }
+  if (state.q) {
+    const words = state.q.toLowerCase().split(/\s+/).filter(Boolean);
+    for (const w of words) if (!a.hay.includes(w)) return false;
+  }
+  return true;
+}
+
+/* ---------- 카드 렌더링 ---------- */
+function authBadgeClass(auth) {
+  if (auth === 'No') return 'badge auth-no';
+  if (auth === 'apiKey') return 'badge auth-key';
+  return 'badge';
+}
+function makeCard(a) {
+  const card = document.createElement('div');
+  card.className = 'card';
+
+  const top = document.createElement('div');
+  top.className = 'card-top';
+  const name = document.createElement('div');
+  name.className = 'name';
+  if ('ok' in a) {
+    const dot = document.createElement('span');
+    dot.className = 'dot ' + (a.ok ? 'ok' : 'bad');
+    dot.title = a.ok ? `링크 정상 (${DATA.healthCheckedAt} 검사)` : `링크 확인 필요 (${DATA.healthCheckedAt} 검사 기준 응답 없음)`;
+    name.appendChild(dot);
+  }
+  const link = document.createElement('a');
+  link.href = a.u;
+  link.target = '_blank';
+  link.rel = 'noopener';
+  link.textContent = a.n;
+  name.appendChild(link);
+  top.appendChild(name);
+
+  const actions = document.createElement('div');
+  actions.className = 'card-actions';
+  const fav = document.createElement('button');
+  fav.className = 'fav' + (favs.has(a.key) ? ' on' : '');
+  fav.textContent = favs.has(a.key) ? '★' : '☆';
+  fav.title = '즐겨찾기';
+  fav.onclick = () => {
+    favs.has(a.key) ? favs.delete(a.key) : favs.add(a.key);
+    localStorage.setItem(FAV_KEY, JSON.stringify([...favs]));
+    fav.classList.toggle('on');
+    fav.textContent = fav.classList.contains('on') ? '★' : '☆';
+    renderTabs();
+    if (state.tab === 'fav') update();
+  };
+  const copy = document.createElement('button');
+  copy.textContent = '⧉';
+  copy.title = 'URL 복사';
+  copy.onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(a.u);
+      toast('URL을 복사했습니다');
+    } catch {
+      toast(a.u);
+    }
+  };
+  actions.append(fav, copy);
+  top.appendChild(actions);
+  card.appendChild(top);
+
+  const desc = document.createElement('div');
+  desc.className = 'desc';
+  desc.textContent = a.d;
+  card.appendChild(desc);
+
+  const meta = document.createElement('div');
+  meta.className = 'meta';
+  const cat = document.createElement('span');
+  cat.className = 'badge cat';
+  cat.textContent = (a.s === 'kr' ? '🇰🇷 ' : '🌍 ') + a.c;
+  cat.title = '이 카테고리만 보기';
+  cat.onclick = () => {
+    state.cat = a.s + ':' + a.c;
+    renderCatOptions();
+    update();
+    scrollTo({ top: 0 });
+  };
+  meta.appendChild(cat);
+  const auth = document.createElement('span');
+  auth.className = authBadgeClass(a.a);
+  auth.textContent = a.a === 'No' ? '인증 불필요' : '🔑 ' + a.a;
+  meta.appendChild(auth);
+  if (a.h) {
+    const https = document.createElement('span');
+    https.className = 'badge';
+    https.textContent = 'HTTPS ' + (a.h === 'Yes' ? '✓' : a.h === 'No' ? '✗' : '?');
+    meta.appendChild(https);
+  }
+  if (a.x) {
+    const cors = document.createElement('span');
+    cors.className = 'badge';
+    cors.textContent = 'CORS ' + (a.x === 'Yes' ? '✓' : a.x === 'No' ? '✗' : '?');
+    meta.appendChild(cors);
+  }
+  card.appendChild(meta);
+  return card;
+}
+
+function renderGrid(reset) {
+  const grid = $('grid');
+  if (reset) grid.innerHTML = '';
+  const start = reset ? 0 : grid.children.length;
+  const slice = filtered.slice(start, shown);
+  const frag = document.createDocumentFragment();
+  for (const a of slice) frag.appendChild(makeCard(a));
+  grid.appendChild(frag);
+
+  $('empty').hidden = filtered.length > 0;
+  const remaining = filtered.length - Math.min(shown, filtered.length);
+  $('moreBtn').hidden = remaining <= 0;
+  $('moreBtn').textContent = `더 보기 (남은 ${remaining}개)`;
+  $('count').textContent = `${Math.min(shown, filtered.length)} / ${filtered.length}개 표시`;
+}
+$('moreBtn').onclick = () => { shown += PAGE; renderGrid(false); };
+
+/* ---------- 상태 갱신 ---------- */
+function update() {
+  filtered = apis.filter(matches);
+  shown = PAGE;
+  renderTabs();
+  renderGrid(true);
+  syncHash();
+}
+
+function syncHash() {
+  const p = new URLSearchParams();
+  if (state.tab !== 'all') p.set('tab', state.tab);
+  if (state.q) p.set('q', state.q);
+  if (state.cat) p.set('cat', state.cat);
+  if (state.auth) p.set('auth', state.auth);
+  const h = p.toString();
+  history.replaceState(null, '', h ? '#' + h : location.pathname + location.search);
+}
+function readHash() {
+  const p = new URLSearchParams(location.hash.slice(1));
+  if (['all', 'kr', 'global', 'fav'].includes(p.get('tab'))) state.tab = p.get('tab');
+  state.q = p.get('q') || '';
+  state.cat = p.get('cat') || '';
+  state.auth = ['No', 'apiKey', 'OAuth', 'etc'].includes(p.get('auth')) ? p.get('auth') : '';
+  $('q').value = state.q;
+  $('authSel').value = state.auth;
+}
+
+/* ---------- 입력 이벤트 ---------- */
+let debounceTimer;
+$('q').addEventListener('input', () => {
+  clearTimeout(debounceTimer);
+  debounceTimer = setTimeout(() => { state.q = $('q').value.trim(); update(); }, 120);
+});
+$('catSel').onchange = () => { state.cat = $('catSel').value; update(); };
+$('authSel').onchange = () => { state.auth = $('authSel').value; update(); };
+document.addEventListener('keydown', (e) => {
+  if (e.key === '/' && document.activeElement !== $('q')) { e.preventDefault(); $('q').focus(); }
+  if (e.key === 'Escape' && document.activeElement === $('q')) { $('q').value = ''; state.q = ''; update(); }
+});
+window.addEventListener('hashchange', () => { readHash(); renderCatOptions(); update(); });
+
+/* ---------- 토스트 ---------- */
+let toastTimer;
+function toast(msg) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), 1600);
+}
+
+/* ---------- 초기화 ---------- */
+$('genInfo').textContent = `데이터 생성일: ${DATA.generated}`;
+$('healthInfo').textContent = DATA.healthCheckedAt ? `링크 상태 검사일: ${DATA.healthCheckedAt}` : '';
+readHash();
+renderCatOptions();
+$('catSel').value = state.cat;
+update();
+</script>
+</body>
+</html>

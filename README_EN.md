@@ -8,6 +8,12 @@ This project systematically organizes all public APIs that developers can utiliz
 
 Updated with the latest information as of 2026, and will be periodically updated going forward.
 
+> ### 🔍 API Explorer — search instead of scrolling
+>
+> Browse 1,700+ Korean and global APIs in one place with instant search, category/auth filters, favorites, link-health badges, and dark mode.
+>
+> 👉 **[Open the API Explorer](https://kmini0157.github.io/public-apis-4Kr/)** — or open [`docs/index.html`](./docs/index.html) locally. Regenerate it with `python scripts/build_explorer.py` after editing the lists.
+
 ## Table of Contents
 
 - [🏛 Government & Public Institutions](#government--public-institutions)

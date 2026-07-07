@@ -1,0 +1,57 @@
+name: "Deploy API Explorer"
+
+on:
+  workflow_dispatch:
+
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'README.md'
+      - 'GLOBAL_PUBLIC_APIS_KR.md'
+      - 'reports/**'
+      - 'scripts/build_explorer.py'
+      - 'scripts/explorer_template.html'
+      - '.github/workflows/deploy_pages.yml'
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build_and_deploy:
+    name: "API 탐색기 빌드 & GitHub Pages 배포"
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: 📁 체크아웃
+        uses: actions/checkout@v4
+
+      - name: 🐍 Python 설정
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 🔨 탐색기 빌드 (README → docs/index.html)
+        run: python scripts/build_explorer.py
+
+      - name: ⚙️ Pages 설정
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
+      - name: 📦 산출물 업로드
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+
+      - name: 🚀 배포
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -6,6 +6,8 @@
 >
 > 원본 저장소와 동일하게 MIT 라이선스 하에 번역 및 배포됩니다.
 
+> 🔍 이 문서의 모든 API는 [API 탐색기](https://kmini0157.github.io/public-apis-4Kr/#tab=global)에서 검색·필터링할 수 있습니다.
+
 ## 목차
 
 - [APILayer API](#apilayer-api)
