@@ -1,0 +1,55 @@
+# 기억 소환 — "X에 대해 내가 뭐 읽었지?" 질문→임베딩→벡터검색→출처 붙은 RAG 답변→푸시. 문답도 다시 기억으로 저장돼 두뇌가 스스로 진화.
+name: 기억 소환 (내 두뇌에 묻기)
+on:
+  webhook: true
+nodes:
+  - id: qembed
+    uses: embed
+    with:
+      text: "{{ trigger.body.q }}"
+      base_url: "{{ secrets.EMBED_BASE_URL ?? 'https://api.openai.com/v1' }}"
+      model: "{{ secrets.EMBED_MODEL ?? 'text-embedding-3-small' }}"
+
+  - id: recall
+    uses: vector.query
+    with:
+      base_url: "{{ secrets.QDRANT_URL ?? 'http://localhost:6333' }}"
+      collection: "memory"
+      vector: "{{ nodes.qembed.output.vector }}"
+      limit: "{{ trigger.body.k ?? 6 }}"
+
+  - id: answer
+    uses: llm.chat
+    with:
+      system: "너는 사용자의 세컨드 브레인이다. 아래 CONTEXT(JSON, 사용자가 과거에 저장한 항목들)만 근거로 한국어로 답한다. 각 주장 끝에 (출처: payload.url)을 붙인다. 근거가 없으면 '내 기억에는 없어'라고만 답한다."
+      prompt: |
+        질문: {{ trigger.body.q }}
+
+        CONTEXT:
+        {{ nodes.recall.output.matches }}
+
+  - id: reply
+    uses: ntfy.publish
+    with:
+      topic: "{{ trigger.body.topic ?? secrets.NTFY_TOPIC }}"
+      title: "💡 {{ trigger.body.q }}"
+      message: "{{ nodes.answer.output.text }}"
+
+  - id: qa_embed
+    uses: embed
+    if: "{{ trigger.body.remember ?? true }}" # 일회성 질문은 remember:false로 기억 오염 방지
+    with:
+      text: "Q: {{ trigger.body.q }}\nA: {{ nodes.answer.output.text }}"
+      base_url: "{{ secrets.EMBED_BASE_URL ?? 'https://api.openai.com/v1' }}"
+
+  - id: qa_store
+    uses: vector.upsert
+    with:
+      base_url: "{{ secrets.QDRANT_URL ?? 'http://localhost:6333' }}"
+      collection: "memory"
+      id: "qa:{{ trigger.body.q }}"
+      vector: "{{ nodes.qa_embed.output.vector }}"
+      payload:
+        type: "qa"
+        q: "{{ trigger.body.q }}"
+        a: "{{ nodes.answer.output.text }}"

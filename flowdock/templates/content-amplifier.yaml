@@ -1,0 +1,52 @@
+# 콘텐츠 증폭기 — 글 URL 하나를 던지면 X 스레드 + 커버 이미지 + 오디오 버전을 만들어 Discord 초안 채널로. 발행 1회 = 산출물 4개.
+name: 콘텐츠 증폭기 (1→4 리퍼포징)
+on:
+  webhook: true
+nodes:
+  - id: fetch
+    uses: jina.reader
+    retry: { max: 3, backoffMs: 1500 }
+    with:
+      url: "{{ trigger.body.url }}"
+
+  - id: thread
+    uses: llm.chat
+    if: "{{ nodes.fetch.output.text }}" # 추출 실패 시 전체 캐스케이드 스킵
+    with:
+      system: "{{ secrets.STYLE_PROMPT ?? '너는 바이럴 스레드 작가다. 훅 → 본론 5트윗 → CTA. 각 트윗 280자 이내, 번호 붙여서.' }}"
+      prompt: |
+        다음 글을 X(트위터) 스레드로 리퍼포징해줘:
+        {{ nodes.fetch.output.text }}
+
+  - id: hook
+    uses: llm.chat
+    with:
+      system: "너는 그래픽 아트디렉터다. 영어 이미지 프롬프트 한 줄만 출력한다."
+      prompt: |
+        이 스레드의 커버 이미지 프롬프트를 써줘 (miniature style, bold, no text):
+        {{ nodes.thread.output.text }}
+
+  - id: cover
+    uses: pollinations.image
+    with:
+      prompt: "{{ nodes.hook.output.text }}"
+      width: 1200
+      height: 675
+
+  - id: voice
+    uses: tts.speak
+    with:
+      voice: "{{ trigger.body.voice ?? 'Seoyeon' }}"
+      text: "{{ nodes.thread.output.text }}"
+
+  - id: draft
+    uses: discord.webhook
+    with:
+      webhook_url: "{{ trigger.body.webhook_url ?? secrets.DISCORD_WEBHOOK ?? 'https://discord.com/api/webhooks/REPLACE_ME' }}"
+      content: |
+        📣 새 리퍼포징 초안 — {{ trigger.body.url }}
+
+        {{ nodes.thread.output.text }}
+
+        🖼 커버: {{ nodes.cover.output.image_url }}
+        🔊 오디오: {{ nodes.voice.output.audio_url }}

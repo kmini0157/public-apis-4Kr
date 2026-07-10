@@ -1,11 +1,11 @@
 # FlowDock
 
 개발자용 멀티 API 자동화 허브 — **내구성 워크플로 엔진 + Workflows-as-Code + 트리거 서버 + 커넥터 생태계**.
-설계 배경과 해자(lock-in) 전략은 [`ARCHITECTURE.md`](./ARCHITECTURE.md) 참고.
+설계 배경과 해자(lock-in) 전략은 [`ARCHITECTURE.md`](./ARCHITECTURE.md), **의존 루프 6종 + 성능 극대화 전략은 [`PLAYBOOK.md`](./PLAYBOOK.md)** 참고.
 
 > 한 줄: 여러 무료 API를 노드로 연결해 YAML 한 파일로 자동화한다. 엔진이 **순서·재시도·레이트리밋·체크포인트·크리덴셜 주입**을 다 처리하므로, 작성자는 비즈니스 로직만 짠다. 그리고 워크플로·크리덴셜·실행이력이 쌓일수록 떠나기 어려워진다.
 
-현재 **93개 테스트 전부 통과 (네트워크 불필요)**, `tsc --noEmit` 클린.
+현재 **95개 테스트 전부 통과 (네트워크 불필요)**, `tsc --noEmit` 클린.
 
 ## 구현된 기능
 
@@ -60,7 +60,7 @@
 
 ```bash
 npm install
-npm test                                    # 93개 테스트 (오프라인)
+npm test                                    # 95개 테스트 (오프라인)
 node --import tsx src/cli.ts                 # 전체 명령 도움말
 ```
 

@@ -7,6 +7,7 @@
  * vault injects creds automatically.
  */
 
+import { createHash } from "node:crypto";
 import type { Connector, ConnectorContext, ConnectorManifest, Json } from "../types.ts";
 
 // --- helpers -----------------------------------------------------------------
@@ -54,6 +55,10 @@ const httpRequest: Connector = {
   id: "http.request",
   title: "HTTP Request",
   rateLimit: { requests: 20, intervalMs: 1000 },
+  outputs: {
+    type: "object",
+    properties: { status: { type: "number" }, ok: { type: "boolean" }, body: {} },
+  },
   async execute(input, ctx) {
     const url = str(input, "url");
     const method = (opt(input, "method") ?? "GET").toUpperCase();
@@ -76,6 +81,10 @@ const jinaReader: Connector = {
   id: "jina.reader",
   title: "Jina Reader (web extract)",
   rateLimit: { requests: 5, intervalMs: 1000 },
+  outputs: {
+    type: "object",
+    properties: { url: { type: "string" }, text: { type: "string" } },
+  },
   async execute(input, ctx) {
     const target = str(input, "url");
     const res = await ctx.fetch(`https://r.jina.ai/${target}`, {
@@ -91,6 +100,7 @@ const llmChat: Connector = {
   id: "llm.chat",
   title: "LLM Chat (Pollinations, keyless)",
   rateLimit: { requests: 1, intervalMs: 1500 },
+  outputs: { type: "object", properties: { text: { type: "string" } } },
   async execute(input, ctx) {
     const prompt = str(input, "prompt");
     const system = opt(input, "system");
@@ -113,6 +123,7 @@ const llmChat: Connector = {
 const pollinationsImage: Connector = {
   id: "pollinations.image",
   title: "Pollinations Image (keyless)",
+  outputs: { type: "object", properties: { image_url: { type: "string" } } },
   async execute(input) {
     const prompt = str(input, "prompt");
     const width = opt(input, "width") ?? "1024";
@@ -127,6 +138,7 @@ const ntfyPublish: Connector = {
   id: "ntfy.publish",
   title: "ntfy push (keyless)",
   rateLimit: { requests: 2, intervalMs: 1000 },
+  outputs: { type: "object", properties: { ok: { type: "boolean" } } },
   async execute(input, ctx) {
     const topic = str(input, "topic");
     const message = str(input, "message");
@@ -196,6 +208,7 @@ const slackWebhook: Connector = {
     required: ["text"],
     properties: { text: { type: "string" }, webhook_url: { type: "string" } },
   },
+  outputs: { type: "object", properties: { ok: { type: "boolean" } } },
   async execute(input, ctx) {
     const url = opt(input, "webhook_url") ?? ctx.creds.webhook_url;
     if (!url) throw new Error("slack.webhook requires 'webhook_url' (input or credential)");
@@ -220,6 +233,7 @@ const discordWebhook: Connector = {
     required: ["content"],
     properties: { content: { type: "string" }, webhook_url: { type: "string" } },
   },
+  outputs: { type: "object", properties: { ok: { type: "boolean" } } },
   async execute(input, ctx) {
     const url = opt(input, "webhook_url") ?? ctx.creds.webhook_url;
     if (!url) throw new Error("discord.webhook requires 'webhook_url' (input or credential)");
@@ -262,6 +276,21 @@ const embed: Connector = {
   },
 };
 
+/**
+ * Qdrant only accepts unsigned-int or UUID point ids, but workflows want to use
+ * natural keys (URLs, headlines) for dedup. Coerce arbitrary strings to a
+ * deterministic sha256-derived UUID so the same key always maps to the same
+ * point (upsert dedup preserved); numbers and real UUIDs pass through.
+ */
+export function qdrantPointId(raw: Json): string | number {
+  if (typeof raw === "number") return raw;
+  const s = String(raw ?? "");
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)) return s;
+  if (/^\d{1,15}$/.test(s)) return Number(s);
+  const h = createHash("sha256").update(s).digest("hex");
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`;
+}
+
 /** Upsert a point into a Qdrant collection (the memory-layer write path). */
 const vectorUpsert: Connector = {
   id: "vector.upsert",
@@ -280,7 +309,10 @@ const vectorUpsert: Connector = {
     const collection = str(input, "collection");
     const headers: Record<string, string> = { "content-type": "application/json" };
     if (ctx.creds.apiKey) headers["api-key"] = ctx.creds.apiKey;
-    const point = { id: inp.id, vector: inp.vector, payload: inp.payload ?? {} };
+    const pointId = qdrantPointId(inp.id ?? null);
+    const payload = { ...(inp.payload && typeof inp.payload === "object" ? (inp.payload as object) : {}) } as Record<string, Json>;
+    if (pointId !== inp.id) payload._source_id = inp.id ?? null; // keep the natural key queryable
+    const point = { id: pointId, vector: inp.vector, payload };
     const res = await ctx.fetch(`${base}/collections/${encodeURIComponent(collection)}/points`, {
       method: "PUT",
       headers,

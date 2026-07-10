@@ -1,0 +1,62 @@
+# 여론 파수꾼 — 4시간마다 브랜드/키워드 페이지를 감시. '이미 알린 이야기'는 벡터 기억으로 걸러내고 처음 보는 전개만 알림. 평판 연대기가 영구 축적.
+name: 여론 파수꾼 (키워드/평판 감시)
+on:
+  cron: "0 */4 * * *" # 매 4시간 (UTC)
+nodes:
+  - id: fetch
+    uses: jina.reader
+    retry: { max: 3, backoffMs: 2000 }
+    with:
+      url: "{{ secrets.WATCH_URL ?? 'https://hn.algolia.com/?q=your-brand' }}"
+
+  - id: embed
+    uses: embed
+    if: "{{ nodes.fetch.output.text }}"
+    with:
+      text: "{{ nodes.fetch.output.text }}"
+      base_url: "{{ secrets.EMBED_BASE_URL ?? 'https://api.openai.com/v1' }}"
+
+  - id: recall
+    uses: vector.query
+    with:
+      base_url: "{{ secrets.QDRANT_URL ?? 'http://localhost:6333' }}"
+      collection: "reputation-chronicle" # 계속 자라는 연대기 컬렉션
+      vector: "{{ nodes.embed.output.vector }}"
+      limit: 3
+
+  - id: judge
+    uses: llm.chat
+    retry: { max: 2, backoffMs: 1500 }
+    with:
+      system: >
+        너는 평판 감시원이다. NEW 페이지에서 가장 중요한 '새 전개' 하나를 뽑는다.
+        [PAST]는 이미 알린 과거 전개들이다. NEW가 PAST와 사실상 같은 이야기면
+        정확히 소문자 false 한 단어만 출력한다.
+        처음 보는 의미 있는 전개면, 눈에 띄는 한국어 헤드라인 한 줄만 출력한다(접두사·따옴표 없이).
+      prompt: |
+        [PAST]
+        {{ nodes.recall.output.matches[0].payload.headline ?? '없음' }}
+        {{ nodes.recall.output.matches[1].payload.headline ?? '' }}
+        {{ nodes.recall.output.matches[2].payload.headline ?? '' }}
+
+        [NEW]
+        {{ nodes.fetch.output.text }}
+
+  - id: alert
+    uses: ntfy.publish
+    if: "{{ nodes.judge.output.text }}" # 중복(false)이면 침묵 — 새 전개만 깨움
+    with:
+      topic: "{{ secrets.NTFY_TOPIC ?? 'flowdock-sentinel' }}"
+      title: "새 평판 전개 감지"
+      message: "{{ nodes.judge.output.text }}"
+
+  - id: chronicle
+    uses: vector.upsert
+    if: "{{ nodes.judge.output.text }}" # 새 전개일 때만 연대기에 영구 append
+    with:
+      base_url: "{{ secrets.QDRANT_URL ?? 'http://localhost:6333' }}"
+      collection: "reputation-chronicle"
+      id: "{{ nodes.judge.output.text }}" # 헤드라인=자연키 → 재탐지 시 자연 dedup
+      vector: "{{ nodes.embed.output.vector }}"
+      payload:
+        headline: "{{ nodes.judge.output.text }}"

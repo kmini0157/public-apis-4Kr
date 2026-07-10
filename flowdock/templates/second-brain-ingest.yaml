@@ -1,0 +1,51 @@
+# 세컨드 브레인 인입 — 북마클릿/공유시트로 URL을 던지면 추출→요약카드→임베딩→벡터 영구저장→즉시 요약 푸시. 쌓일수록 못 떠나는 코어 락인.
+name: 세컨드 브레인 인입 (공유→두뇌)
+on:
+  webhook: true
+nodes:
+  - id: fetch
+    uses: jina.reader
+    retry: { max: 3, backoffMs: 1500 }
+    with:
+      url: "{{ trigger.body.url }}"
+
+  - id: enrich
+    uses: llm.chat
+    if: "{{ nodes.fetch.output.text }}" # 빈 페이지면 이하 전체 캐스케이드 스킵
+    with:
+      system: "너는 사용자의 세컨드 브레인 사서다. 저장물을 나중에 되찾기 쉽게 정리한다."
+      prompt: |
+        다음 글을 정확히 이 형식으로 정리해줘(다른 말 금지):
+        제목: <한 줄 제목>
+        태그: <#소문자태그 3~5개, 공백구분>
+        요약: <핵심 3줄>
+
+        {{ nodes.fetch.output.text }}
+
+  - id: embed
+    uses: embed
+    with:
+      # 원문 대신 '요약 카드'를 임베딩 → 토큰 한도 초과 방지 + 지연/비용 절감
+      text: "{{ nodes.enrich.output.text }}"
+      base_url: "{{ secrets.EMBED_BASE_URL ?? 'https://api.openai.com/v1' }}"
+      model: "{{ secrets.EMBED_MODEL ?? 'text-embedding-3-small' }}"
+
+  - id: store
+    uses: vector.upsert
+    with:
+      base_url: "{{ secrets.QDRANT_URL ?? 'http://localhost:6333' }}"
+      collection: "memory"
+      id: "{{ trigger.body.url }}" # URL = 자연키 → 재공유해도 덮어써 중복 없음
+      vector: "{{ nodes.embed.output.vector }}"
+      payload:
+        url: "{{ trigger.body.url }}"
+        card: "{{ nodes.enrich.output.text }}"
+        text: "{{ nodes.fetch.output.text }}"
+        source: "{{ trigger.body.source ?? 'share-sheet' }}"
+
+  - id: notify
+    uses: ntfy.publish
+    with:
+      topic: "{{ trigger.body.topic ?? secrets.NTFY_TOPIC }}"
+      title: "🧠 저장 완료"
+      message: "{{ nodes.enrich.output.text }}"

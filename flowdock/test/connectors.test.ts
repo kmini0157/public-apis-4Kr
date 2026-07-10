@@ -8,6 +8,7 @@ import {
   embed,
   vectorUpsert,
   vectorQuery,
+  qdrantPointId,
 } from "../src/connectors/index.ts";
 import type { Json } from "../src/types.ts";
 
@@ -74,6 +75,30 @@ test("vector.query searches and returns matches", async () => {
   assert.equal(out.matches.length, 1);
   assert.match(calls[0]!.url, /\/points\/search$/);
   assert.equal(JSON.parse(calls[0]!.init!.body as string).limit, 3);
+});
+
+test("qdrantPointId: numbers/UUIDs pass through; strings map to stable UUIDs", () => {
+  assert.equal(qdrantPointId(42), 42);
+  assert.equal(qdrantPointId("123"), 123);
+  const uuid = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
+  assert.equal(qdrantPointId(uuid), uuid);
+  const a = qdrantPointId("https://example.com/post");
+  const b = qdrantPointId("https://example.com/post");
+  assert.equal(a, b); // deterministic => upsert dedup preserved
+  assert.match(String(a), /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+  assert.notEqual(qdrantPointId("other-key"), a);
+});
+
+test("vector.upsert coerces a URL id to a UUID and keeps the natural key in payload", async () => {
+  const { calls, ctx } = captureFetch({ status: "acknowledged" });
+  await vectorUpsert.execute(
+    { collection: "mem", id: "https://example.com/x", vector: [1], payload: { url: "https://example.com/x" } },
+    ctx,
+  );
+  const point = JSON.parse(calls[0]!.init!.body as string).points[0];
+  assert.match(point.id, /^[0-9a-f-]{36}$/); // valid Qdrant UUID id
+  assert.equal(point.payload._source_id, "https://example.com/x");
+  assert.equal(point.payload.url, "https://example.com/x");
 });
 
 test("vector connectors surface a non-OK response as an error", async () => {

@@ -1,0 +1,53 @@
+# 밤의 기억 은행 — 매일 22:00 KST 하루를 회고 오디오+텍스트로 닫고, 회고를 'diary' 벡터 컬렉션에 영구 적재. 매일 밤 지울 수 없는 기억이 한 알씩.
+name: 밤의 기억 은행 (저녁 결산 리추얼)
+on:
+  cron: "0 13 * * *" # 매일 22:00 KST
+nodes:
+  - id: feed
+    uses: jina.reader
+    retry: { max: 3, backoffMs: 800 }
+    with:
+      url: "{{ trigger.body.source ?? 'https://github.com/yourname' }}" # 내 활동/저널 소스로 교체
+
+  - id: reflect
+    uses: llm.chat
+    with:
+      system: "너는 사용자의 하루를 정리하는 회고 코치다. 판단보다 관찰, 그리고 내일의 작은 한 걸음."
+      prompt: |
+        아래는 오늘 사용자의 활동/소스다. 저녁 회고를 한국어로 써줘.
+        형식: (1) 오늘의 요약 3줄 (2) 잘한 점 1가지 (3) 내일의 한 걸음.
+        {{ nodes.feed.output.text }}
+
+  - id: embed
+    uses: embed
+    if: "{{ nodes.reflect.output.text }}" # 회고가 비면 embed→store 캐스케이드 스킵
+    with:
+      text: "{{ nodes.reflect.output.text }}"
+      base_url: "{{ secrets.EMBED_BASE_URL ?? 'https://api.openai.com/v1' }}"
+
+  - id: store
+    uses: vector.upsert
+    with:
+      base_url: "{{ secrets.QDRANT_URL ?? 'http://localhost:6333' }}"
+      collection: "diary"
+      id: "{{ trigger.firedAt }}" # cron ms 타임스탬프 = 날마다 고유 포인트
+      vector: "{{ nodes.embed.output.vector }}"
+      payload:
+        date: "{{ trigger.firedAt }}"
+        summary: "{{ nodes.reflect.output.text }}"
+
+  - id: voice
+    uses: tts.speak
+    with:
+      voice: "{{ trigger.body.voice ?? 'Seoyeon' }}"
+      text: "{{ nodes.reflect.output.text }}"
+
+  - id: deliver
+    uses: ntfy.publish
+    with:
+      topic: "{{ secrets.NTFY_TOPIC ?? 'flowdock-dusk' }}"
+      title: "오늘의 결산"
+      message: |
+        {{ nodes.reflect.output.text }}
+
+        ▶ 오디오: {{ nodes.voice.output.audio_url }}

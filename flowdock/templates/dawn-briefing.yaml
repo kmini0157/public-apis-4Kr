@@ -1,0 +1,54 @@
+# 여명 브리핑 — 매일 07:00 KST, 튜닝한 소스를 60초 오디오+텍스트 브리핑으로. 완전 키리스(크리덴셜 0개), 긴급 속보만 따로 울림.
+name: 여명 브리핑 (오디오 아침 리추얼)
+on:
+  cron: "0 22 * * *" # 매일 07:00 KST (스케줄러는 UTC)
+nodes:
+  - id: source
+    uses: jina.reader
+    retry: { max: 3, backoffMs: 800 }
+    with:
+      url: "{{ trigger.body.source ?? 'https://news.ycombinator.com' }}"
+
+  - id: brief
+    uses: llm.chat
+    with:
+      system: "너는 사용자의 아침을 여는 개인 비서다. 핵심만, 따뜻하고 간결한 한국어로."
+      prompt: |
+        아래 소스로 오늘 아침 브리핑을 써줘. 소리 내어 읽기 좋은 문장으로.
+        형식: (1) 한 줄 헤드라인 (2) 꼭 알아야 할 3가지 불릿 (3) 오늘의 한 문장 제언.
+        소스:
+        {{ nodes.source.output.text }}
+
+  - id: voice
+    uses: tts.speak
+    with:
+      voice: "{{ trigger.body.voice ?? 'Seoyeon' }}"
+      text: "{{ nodes.brief.output.text }}"
+
+  - id: deliver
+    uses: ntfy.publish
+    with:
+      topic: "{{ secrets.NTFY_TOPIC ?? 'flowdock-dawn' }}"
+      title: "여명 브리핑"
+      message: |
+        {{ nodes.brief.output.text }}
+
+        ▶ 오디오로 듣기: {{ nodes.voice.output.audio_url }}
+
+  - id: signal
+    uses: llm.chat
+    with:
+      system: "너는 리스크 감시자다. 사용자를 지금 당장 깨울 만한 '긴급/속보'만 판별한다."
+      prompt: |
+        아래 소스에서 사용자가 오늘 아침 즉시 알아야 할 긴급 사안이 있으면
+        한국어 한 줄 속보로만 써라. 없으면 소문자로 정확히  false  만 출력하라(다른 문자·문장부호 금지).
+        소스:
+        {{ nodes.source.output.text }}
+
+  - id: urgent
+    uses: ntfy.publish
+    if: "{{ nodes.signal.output.text }}" # 'false'면 falsy → 스킵 (조용한 아침)
+    with:
+      topic: "{{ secrets.NTFY_TOPIC ?? 'flowdock-dawn' }}"
+      title: "⚠ 긴급 속보"
+      message: "{{ nodes.signal.output.text }}"
