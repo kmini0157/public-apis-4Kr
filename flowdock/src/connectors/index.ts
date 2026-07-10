@@ -8,6 +8,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { JsonKv } from "../store.ts";
 import type { Connector, ConnectorContext, ConnectorManifest, Json } from "../types.ts";
 
 // --- helpers -----------------------------------------------------------------
@@ -354,6 +355,56 @@ const vectorQuery: Connector = {
   },
 };
 
+// One JsonKv per file path — a shared instance keeps read-modify-write
+// sequences atomic within the process (the JS event loop serializes them).
+const kvInstances = new Map<string, JsonKv>();
+function kvFor(path: string | undefined): JsonKv {
+  const p = path ?? ".flowdock/kv.json";
+  let kv = kvInstances.get(p);
+  if (!kv) {
+    kv = new JsonKv(p);
+    kvInstances.set(p, kv);
+  }
+  return kv;
+}
+
+/** Read a value from workflow state. Exact previous-state for watchers. */
+const kvGet: Connector = {
+  id: "kv.get",
+  title: "KV State: get",
+  inputs: {
+    type: "object",
+    required: ["key"],
+    properties: { key: { type: "string" }, namespace: { type: "string" }, default: {} },
+  },
+  outputs: { type: "object", properties: { value: {}, found: { type: "boolean" } } },
+  async execute(input) {
+    const inp = input as Record<string, Json>;
+    const kv = kvFor(opt(input, "path"));
+    const value = kv.get(opt(input, "namespace") ?? "default", str(input, "key"));
+    if (value === undefined) return { value: inp.default ?? null, found: false };
+    return { value, found: true };
+  },
+};
+
+/** Write a value to workflow state; returns the previous value. */
+const kvSet: Connector = {
+  id: "kv.set",
+  title: "KV State: set",
+  inputs: {
+    type: "object",
+    required: ["key", "value"],
+    properties: { key: { type: "string" }, value: {}, namespace: { type: "string" } },
+  },
+  outputs: { type: "object", properties: { ok: { type: "boolean" }, previous: {} } },
+  async execute(input) {
+    const inp = input as Record<string, Json>;
+    const kv = kvFor(opt(input, "path"));
+    const previous = kv.set(opt(input, "namespace") ?? "default", str(input, "key"), inp.value ?? null);
+    return { ok: true, previous: previous ?? null };
+  },
+};
+
 const BUILTINS: Connector[] = [
   echo,
   httpRequest,
@@ -368,6 +419,8 @@ const BUILTINS: Connector[] = [
   embed,
   vectorUpsert,
   vectorQuery,
+  kvGet,
+  kvSet,
 ];
 
 export interface DynamicMeta {
@@ -440,5 +493,7 @@ export {
   embed,
   vectorUpsert,
   vectorQuery,
+  kvGet,
+  kvSet,
 };
 export type { ConnectorContext };

@@ -5,7 +5,7 @@
 
 > 한 줄: 여러 무료 API를 노드로 연결해 YAML 한 파일로 자동화한다. 엔진이 **순서·재시도·레이트리밋·체크포인트·크리덴셜 주입**을 다 처리하므로, 작성자는 비즈니스 로직만 짠다. 그리고 워크플로·크리덴셜·실행이력이 쌓일수록 떠나기 어려워진다.
 
-현재 **95개 테스트 전부 통과 (네트워크 불필요)**, `tsc --noEmit` 클린.
+현재 **105개 테스트 전부 통과 (네트워크 불필요)**, `tsc --noEmit` 클린.
 
 ## 구현된 기능
 
@@ -19,7 +19,9 @@
 | 크리덴셜 볼트 | AES-256-GCM 봉투 암호화 + 로그 마스킹 |
 | 레이트리밋 | 커넥터별 토큰버킷 (무료 티어 보호) |
 | **조건부 실행** | 노드 `if` 표현식 → falsy면 노드+의존 노드 **cascade skip** |
-| 커넥터(13) | echo · http.request · jina.reader · llm.chat(Pollinations) · pollinations.image · ntfy.publish · resend.email · **tts.speak**(키리스) · **slack.webhook** · **discord.webhook** · **embed** · **vector.upsert** · **vector.query**(Qdrant) |
+| **병렬 실행 (M4)** | 독립 노드는 레벨 단위 동시 실행 — 동시성 상한 = **플랜의 maxConcurrency** (Free 2/Pro 8/Team 20) |
+| **응답 캐시 (M4)** | GET 응답 TTL 캐시 (`serve --cache-ttl <ms>`) — 같은 URL을 여러 루프가 읽어도 무료 한도 소모 1회 |
+| 커넥터(15) | echo · http.request · jina.reader · llm.chat(Pollinations) · pollinations.image · ntfy.publish · resend.email · tts.speak(키리스) · slack.webhook · discord.webhook · embed · vector.upsert · vector.query(Qdrant) · **kv.get · kv.set**(상태) |
 
 > **메모리 레이어(RAG)**: `jina.reader → embed → vector.upsert`로 무엇이든 빨아들여 저장하고 `embed → vector.query`로 의미검색. 쌓일수록 떠나기 어려운 데이터 축적 락인 (`examples/memory-ingest.yaml`).
 
@@ -60,7 +62,7 @@
 
 ```bash
 npm install
-npm test                                    # 95개 테스트 (오프라인)
+npm test                                    # 105개 테스트 (오프라인)
 node --import tsx src/cli.ts                 # 전체 명령 도움말
 ```
 
@@ -157,4 +159,4 @@ export default defineConnector({
 
 ## 다음 단계
 
-코어(M0)→DX(M1)→생태계(M2)→수익화(M3)→운영 하드닝(결제·볼트 시크릿·샌드박스)까지 구현 완료. 남은 신뢰 경계(완전 격리를 위한 프로세스 수준 샌드박싱, 결제 멱등성 저장, 마스터키 KMS 로테이션)는 [`ARCHITECTURE.md`](./ARCHITECTURE.md) §10 참조.
+코어(M0)→DX(M1)→생태계(M2)→수익화(M3)→운영 하드닝→**M4 엔진 진화(병렬 실행·kv 상태·응답 캐시·결제 멱등성)**까지 구현 완료. 남은 신뢰 경계(완전 격리를 위한 프로세스 수준 샌드박싱, 마스터키 KMS 로테이션)는 [`ARCHITECTURE.md`](./ARCHITECTURE.md) §10 참조.

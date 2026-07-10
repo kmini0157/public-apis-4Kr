@@ -28,7 +28,7 @@ import { listTemplates, useTemplate } from "./templates.ts";
 import { WebhookSecretStore, VaultWebhookSecretStore, type WebhookSecrets } from "./webhook-secret.ts";
 import { buildEgressResolver, type EgressResolver as EngineEgress } from "./sandbox.ts";
 import { Vault, type TenantKey } from "./vault.ts";
-import { BillingService } from "./billing.ts";
+import { BillingService, JsonEventLog } from "./billing.ts";
 import { TenantStore, can, type Role, type Tenant } from "./tenancy.ts";
 import { UsageMeter } from "./usage.ts";
 import { Workspace, PermissionError, QuotaError, type Actor } from "./workspace.ts";
@@ -86,12 +86,17 @@ function buildEngine(
   registry: ConnectorRegistry,
   store: JsonStore = new JsonStore(),
   egress?: EngineEgress,
+  opts: { cacheTtlMs?: number } = {},
 ): Engine {
+  // The tenant's plan caps node concurrency — Free 2 / Pro 8 / Team 20.
+  const plan = getPlan(new TenantStore().get().plan);
   return new Engine({
     registry,
     store,
     secrets: collectSecrets(),
     creds: credsProvider(),
+    concurrency: plan.maxConcurrency === UNLIMITED ? 64 : plan.maxConcurrency,
+    ...(opts.cacheTtlMs !== undefined ? { fetchCacheTtlMs: opts.cacheTtlMs } : {}),
     ...(egress ? { egress } : {}),
   });
 }
@@ -129,7 +134,7 @@ function buildBilling(): BillingService | undefined {
       process.exit(1);
     }
   }
-  return new BillingService(new TenantStore(), secret, priceToPlan ? { priceToPlan } : {});
+  return new BillingService(new TenantStore(), secret, priceToPlan ? { priceToPlan } : {}, new JsonEventLog());
 }
 
 /** Load every *.yaml in a directory into Workflows (skips invalid, warns). */
@@ -315,7 +320,10 @@ async function main() {
       // Hosted hardening: --sandbox enforces per-connector egress allowlists.
       const sandboxed = flags.sandbox === "true";
       const egress = sandboxed ? buildEgressResolver(registry, { strict: true }) : undefined;
-      const engine = buildEngine(registry, store, egress);
+      const cacheTtl = numFlag(flags["cache-ttl"], "cache-ttl");
+      const engine = buildEngine(registry, store, egress, {
+        ...(cacheTtl !== undefined ? { cacheTtlMs: cacheTtl } : {}),
+      });
       const workflows = loadWorkflowsDir(join(project.root, project.workflowsDir));
       const portFlag = numFlag(flags.port, "port");
       const bodyLimit = numFlag(flags["body-limit"], "body-limit");

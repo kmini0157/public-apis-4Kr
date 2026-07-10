@@ -232,7 +232,7 @@ run_steps(id, run_id, node_id, status, input_ref, output_ref, latency_ms, attemp
 ### 남은 신뢰 경계 (정직한 한계)
 
 - **egress 샌드박스는 *네트워크 egress*만 막는다, 코드 실행이 아니다.** 완전히 신뢰할 수 없는 커넥터 코드는 프로세스 수준 격리(worker_threads / V8 isolate / microVM)가 필요하다. 현재 층은 자격증명 유출·SSRF의 폭발 반경을 실질적으로 줄이지만, 결정적 공격자에 대한 완전한 격리는 아니다.
-- **결제 멱등성**: Stripe는 동일 이벤트를 재전송할 수 있다 — 운영에서는 `event.id` 멱등성 저장이 추가로 필요(서명·리플레이 방어는 구현됨).
+- ~~**결제 멱등성**~~: ✅ 구현됨 — `event.id` 로그(`JsonEventLog`)로 Stripe 재전송이 no-op 처리된다 (서명 검증 이후에만 기록).
 - **볼트 마스터키 관리**: `FLOWDOCK_MASTER_KEY`는 KMS/시크릿 매니저에서 주입·로테이션해야 한다.
 
 ---

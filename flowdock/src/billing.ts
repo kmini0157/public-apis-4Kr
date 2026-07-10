@@ -13,6 +13,9 @@
  */
 
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { readFileSync, existsSync } from "node:fs";
+import { join } from "node:path";
+import { atomicWrite } from "./store.ts";
 import { isPlanId, type PlanId } from "./plans.ts";
 import type { TenantStore } from "./tenancy.ts";
 
@@ -67,6 +70,44 @@ export interface StripeEvent {
   data: { object: Record<string, unknown> };
 }
 
+/** Seen-event log so Stripe redeliveries are no-ops (webhook idempotency). */
+export interface EventLog {
+  has(id: string): boolean;
+  add(id: string): void;
+}
+
+/** JSON-file event log, capped to the most recent entries. */
+export class JsonEventLog implements EventLog {
+  private ids: string[] = [];
+  private set = new Set<string>();
+  constructor(
+    private readonly path = join(".flowdock", "billing-events.json"),
+    private readonly cap = 1000,
+  ) {
+    if (path && existsSync(path)) {
+      try {
+        this.ids = JSON.parse(readFileSync(path, "utf8")) as string[];
+        this.set = new Set(this.ids);
+      } catch {
+        this.ids = [];
+      }
+    }
+  }
+  has(id: string): boolean {
+    return this.set.has(id);
+  }
+  add(id: string): void {
+    if (this.set.has(id)) return;
+    this.ids.push(id);
+    this.set.add(id);
+    while (this.ids.length > this.cap) {
+      const evicted = this.ids.shift()!;
+      this.set.delete(evicted);
+    }
+    if (this.path) atomicWrite(this.path, JSON.stringify(this.ids));
+  }
+}
+
 export interface BillingConfig {
   /** Maps a Stripe price id to a FlowDock plan. */
   priceToPlan?: Record<string, PlanId>;
@@ -87,9 +128,11 @@ export class BillingService {
     private readonly tenants: TenantStore,
     private readonly signingSecret: string,
     private readonly config: BillingConfig = {},
+    /** Optional idempotency log; Stripe redelivers events, so hosted setups pass one. */
+    private readonly events?: EventLog,
   ) {}
 
-  /** Verify + apply a raw Stripe webhook. Returns what changed. */
+  /** Verify + apply a raw Stripe webhook. Redelivered events are no-ops. */
   handleWebhook(rawBody: string, signatureHeader: string, nowSec: number): BillingResult {
     verifyStripeSignature(rawBody, signatureHeader, this.signingSecret, nowSec, this.config.toleranceSec);
     let event: StripeEvent;
@@ -97,6 +140,15 @@ export class BillingService {
       event = JSON.parse(rawBody) as StripeEvent;
     } catch {
       throw new SignatureError("webhook body is not valid JSON");
+    }
+    // Only record ids AFTER signature verification (unauthenticated ids must not pollute the log).
+    if (this.events && event.id) {
+      if (this.events.has(event.id)) {
+        return { type: event.type, applied: false, reason: "duplicate event (already processed)" };
+      }
+      const result = this.applyEvent(event);
+      this.events.add(event.id);
+      return result;
     }
     return this.applyEvent(event);
   }

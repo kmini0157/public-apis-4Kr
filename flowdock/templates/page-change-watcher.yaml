@@ -1,0 +1,50 @@
+# 페이지 변화 감시 — 30분마다 페이지를 읽어 kv에 저장한 '마지막 스냅샷'과 정확 비교. 실질 변화만 알리고 스냅샷 갱신. 알림 이력이 감사 추적으로 축적.
+name: 페이지 변화 감시 (kv 상태 비교)
+on:
+  cron: "*/30 * * * *" # 매 30분 (UTC)
+nodes:
+  - id: fetch
+    uses: jina.reader
+    retry: { max: 3, backoffMs: 2000 }
+    with:
+      url: "{{ secrets.WATCH_URL ?? 'https://example.com/pricing' }}"
+
+  - id: last
+    uses: kv.get
+    with:
+      namespace: "watch"
+      key: "{{ secrets.WATCH_URL ?? 'https://example.com/pricing' }}"
+      default: ""
+
+  - id: judge
+    uses: llm.chat
+    if: "{{ nodes.fetch.output.text }}" # 추출 실패 시 조용히 종료
+    retry: { max: 2, backoffMs: 1500 }
+    with:
+      system: >
+        너는 변경 감시원이다. OLD는 마지막으로 확인한 페이지, NEW는 방금 읽은 페이지다.
+        가격·정책·재고·문구 등 사용자에게 의미 있는 실질 변화가 없으면
+        정확히 소문자 false 한 단어만 출력한다(광고·날짜·레이아웃 변화는 무시).
+        실질 변화가 있으면 무엇이 어떻게 바뀌었는지 한국어 한 줄로만 출력한다.
+      prompt: |
+        [OLD]
+        {{ nodes.last.output.value }}
+
+        [NEW]
+        {{ nodes.fetch.output.text }}
+
+  - id: alert
+    uses: ntfy.publish
+    if: "{{ nodes.judge.output.text }}" # 변화 없으면(false) 침묵
+    with:
+      topic: "{{ secrets.NTFY_TOPIC ?? 'flowdock-watch' }}"
+      title: "페이지 변화 감지"
+      message: "{{ nodes.judge.output.text }}"
+
+  - id: save
+    uses: kv.set
+    if: "{{ nodes.judge.output.text }}" # 변화가 있을 때만 스냅샷 갱신 (쓰기 최소화)
+    with:
+      namespace: "watch"
+      key: "{{ secrets.WATCH_URL ?? 'https://example.com/pricing' }}"
+      value: "{{ nodes.fetch.output.text }}"

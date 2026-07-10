@@ -9,7 +9,7 @@
 
 import { mkdirSync, readFileSync, writeFileSync, renameSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { RunRecord, StepRecord } from "./types.ts";
+import type { Json, RunRecord, StepRecord } from "./types.ts";
 
 export interface Store {
   saveRun(run: RunRecord): void;
@@ -142,6 +142,37 @@ export class JsonStore implements Store, RunQueryStore, PrunableStore {
       if (key.startsWith(`${runId}::`)) delete this.data.steps[key];
     }
     this.flush();
+  }
+}
+
+/**
+ * Namespaced key-value state store for workflows (kv.get / kv.set connectors).
+ * Gives watchers exact previous-state comparison without abusing vector
+ * similarity. JSON-file backed for the dev tier; swap for KV/D1 when hosted.
+ */
+export class JsonKv {
+  private data: Record<string, Record<string, Json>> = {};
+  constructor(private readonly path = join(".flowdock", "kv.json")) {
+    if (path && existsSync(path)) {
+      try {
+        this.data = JSON.parse(readFileSync(path, "utf8")) as typeof this.data;
+      } catch {
+        this.data = {};
+      }
+    }
+  }
+  private flush() {
+    if (this.path) atomicWrite(this.path, JSON.stringify(this.data, null, 2));
+  }
+  get(namespace: string, key: string): Json | undefined {
+    return this.data[namespace]?.[key];
+  }
+  /** Set a value; returns the previous value (undefined if none). */
+  set(namespace: string, key: string, value: Json): Json | undefined {
+    const previous = this.data[namespace]?.[key];
+    (this.data[namespace] ??= {})[key] = value;
+    this.flush();
+    return previous;
   }
 }
 

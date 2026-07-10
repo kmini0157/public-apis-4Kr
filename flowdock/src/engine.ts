@@ -48,6 +48,10 @@ export interface EngineOptions {
   logSink?: (line: string) => void;
   /** Per-connector egress policy (sandboxing). Default: allow all (M0 behavior). */
   egress?: EgressResolver;
+  /** Max nodes executing at once (plan.maxConcurrency). Default 8. */
+  concurrency?: number;
+  /** TTL for caching successful GET responses across nodes/runs (0 = off). */
+  fetchCacheTtlMs?: number;
 }
 
 export interface RunInput {
@@ -67,6 +71,31 @@ export interface RunResult {
 }
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/** Minimal counting semaphore for the node-execution concurrency cap. */
+class Semaphore {
+  private queue: Array<() => void> = [];
+  constructor(private slots: number) {}
+  async acquire(): Promise<void> {
+    if (this.slots > 0) {
+      this.slots--;
+      return;
+    }
+    await new Promise<void>((resolve) => this.queue.push(resolve));
+  }
+  release(): void {
+    const next = this.queue.shift();
+    if (next) next();
+    else this.slots++;
+  }
+}
+
+interface CachedResponse {
+  at: number;
+  status: number;
+  contentType: string | null;
+  body: string;
+}
 
 /** Kahn topological sort; throws on cycle or dangling reference. */
 export function topoSort(nodes: NodeSpec[]): NodeSpec[] {
@@ -119,6 +148,9 @@ export class Engine {
   private readonly now: () => number;
   private readonly logSink: (line: string) => void;
   private readonly egress: EgressResolver;
+  private readonly concurrency: number;
+  private readonly fetchCacheTtlMs: number;
+  private readonly fetchCache = new Map<string, CachedResponse>();
 
   constructor(opts: EngineOptions) {
     this.registry = opts.registry;
@@ -131,6 +163,8 @@ export class Engine {
     this.now = opts.now ?? (() => Date.now());
     this.logSink = opts.logSink ?? ((l) => console.error(l));
     this.egress = opts.egress ?? (() => ({ mode: "allow" }));
+    this.concurrency = Math.max(1, opts.concurrency ?? 8);
+    this.fetchCacheTtlMs = opts.fetchCacheTtlMs ?? 0;
   }
 
   /** Time-ordered + UUID suffix so rapid same-millisecond fires never collide. */
@@ -138,17 +172,53 @@ export class Engine {
     return `run_${this.now().toString(36)}_${randomUUID().slice(0, 8)}`;
   }
 
-  /** Build the rate-limited, timed-out, masking fetch handed to a connector. */
+  /** Build the rate-limited, timed-out, caching, masking fetch for a connector. */
   private instrumentedFetch(connectorId: string, log: ConnectorContext["log"]): typeof fetch {
     const rateLimit = this.registry.get(connectorId).rateLimit;
     const policy = this.egress(connectorId);
     const wrapped = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
-      enforceEgress(input, policy); // sandbox: block disallowed hosts before any I/O
+      enforceEgress(input, policy); // sandbox first: the cache must never bypass it
+      const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
+      const url =
+        typeof input === "string" ? input : input instanceof URL ? input.href : (input as Request).url;
+      const cacheable = this.fetchCacheTtlMs > 0 && method === "GET";
+
+      if (cacheable) {
+        const hit = this.fetchCache.get(url);
+        if (hit && this.now() - hit.at < this.fetchCacheTtlMs) {
+          log(`cache hit: ${url}`);
+          return new Response(hit.body, {
+            status: hit.status,
+            headers: hit.contentType ? { "content-type": hit.contentType } : {},
+          });
+        }
+      }
+
       await this.limiter.acquire(connectorId, rateLimit);
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), this.timeoutMs);
       try {
-        return await this.fetchImpl(input, { ...init, signal: ctrl.signal });
+        const res = await this.fetchImpl(input, { ...init, signal: ctrl.signal });
+        if (cacheable && res.ok) {
+          const body = await res.text();
+          if (this.fetchCache.size >= 100) {
+            const oldest = this.fetchCache.keys().next().value;
+            if (oldest !== undefined) this.fetchCache.delete(oldest);
+          }
+          this.fetchCache.set(url, {
+            at: this.now(),
+            status: res.status,
+            contentType: res.headers.get("content-type"),
+            body,
+          });
+          return new Response(body, {
+            status: res.status,
+            headers: res.headers.get("content-type")
+              ? { "content-type": res.headers.get("content-type")! }
+              : {},
+          });
+        }
+        return res;
       } catch (err) {
         log(`fetch failed: ${(err as Error).message}`);
         throw err;
@@ -226,6 +296,24 @@ export class Engine {
     return d;
   }
 
+  /**
+   * Group topo-sorted nodes into levels by dependency depth. Nodes in the same
+   * level are independent of each other and can run concurrently; expressions
+   * can only reference earlier levels, so the level barrier keeps the scope
+   * consistent.
+   */
+  private levelsOf(order: NodeSpec[]): NodeSpec[][] {
+    const depth = new Map<string, number>();
+    const levels: NodeSpec[][] = [];
+    for (const node of order) {
+      let d = 0;
+      for (const dep of this.depsOf(node)) d = Math.max(d, (depth.get(dep) ?? 0) + 1);
+      depth.set(node.id, d);
+      (levels[d] ??= []).push(node);
+    }
+    return levels;
+  }
+
   /** Return a reason to skip the node (dependency skipped or `if` falsy), else null. */
   private skipReason(node: NodeSpec, skipped: Set<string>, scope: Record<string, Json>): string | null {
     for (const dep of this.depsOf(node)) {
@@ -268,43 +356,66 @@ export class Engine {
       nodes: nodesScope,
     };
 
+    // Execute level by level: nodes within a level are independent and run
+    // concurrently under the plan's concurrency cap. A failure lets its
+    // same-level siblings finish (their checkpoints are kept for resume) but
+    // stops all later levels.
     let failed = false;
     const skipped = new Set<string>();
-    for (const node of order) {
-      const existing = this.store.getStep(runId, node.id);
-      if (existing?.status === "succeeded") {
-        this.logSink(`[${node.id}] skipped (checkpoint)`);
-        continue;
-      }
-      if (existing?.status === "skipped") {
-        skipped.add(node.id);
-        continue;
+    const semaphore = new Semaphore(this.concurrency);
+    for (const level of this.levelsOf(order)) {
+      if (failed) break;
+
+      const toRun: NodeSpec[] = [];
+      for (const node of level) {
+        const existing = this.store.getStep(runId, node.id);
+        if (existing?.status === "succeeded") {
+          nodesScope[node.id] = { output: existing.output ?? null };
+          this.logSink(`[${node.id}] skipped (checkpoint)`);
+          continue;
+        }
+        if (existing?.status === "skipped") {
+          skipped.add(node.id);
+          continue;
+        }
+        // Cascade: skip when a dependency was skipped, or the `if` guard is falsy.
+        const skipReason = this.skipReason(node, skipped, scope);
+        if (skipReason) {
+          const step: StepRecord = {
+            runId,
+            nodeId: node.id,
+            status: "skipped",
+            attempts: 0,
+            latencyMs: 0,
+            error: skipReason,
+          };
+          this.store.saveStep(step);
+          skipped.add(node.id);
+          this.logSink(`[${node.id}] skipped (${skipReason})`);
+          continue;
+        }
+        toRun.push(node);
       }
 
-      // Cascade: skip when a dependency was skipped, or the `if` guard is falsy.
-      const skipReason = this.skipReason(node, skipped, scope);
-      if (skipReason) {
-        const step: StepRecord = {
-          runId,
-          nodeId: node.id,
-          status: "skipped",
-          attempts: 0,
-          latencyMs: 0,
-          error: skipReason,
-        };
-        this.store.saveStep(step);
-        skipped.add(node.id);
-        this.logSink(`[${node.id}] skipped (${skipReason})`);
-        continue;
-      }
+      const steps = await Promise.all(
+        toRun.map(async (node) => {
+          await semaphore.acquire();
+          try {
+            const step = await this.runNode(node, runId, scope);
+            this.store.saveStep(step); // checkpoint immediately, not at the barrier
+            return step;
+          } finally {
+            semaphore.release();
+          }
+        }),
+      );
 
-      const step = await this.runNode(node, runId, scope);
-      this.store.saveStep(step);
-      if (step.status === "succeeded") {
-        nodesScope[node.id] = { output: step.output ?? null };
-      } else {
-        failed = true;
-        break; // stop the run; resume re-enters at this node
+      for (const step of steps) {
+        if (step.status === "succeeded") {
+          nodesScope[step.nodeId] = { output: step.output ?? null };
+        } else {
+          failed = true; // stop the run after this level; resume re-enters here
+        }
       }
     }
 
