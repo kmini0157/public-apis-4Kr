@@ -93,9 +93,13 @@ class Semaphore {
 interface CachedResponse {
   at: number;
   status: number;
-  contentType: string | null;
-  body: string;
+  headers: Array<[string, string]>;
+  body: ArrayBuffer;
 }
+
+/** Credential-bearing headers whose presence makes a response uncacheable
+ *  (shared-cache rule: never serve one principal's response to another). */
+const CREDENTIAL_HEADERS = ["authorization", "cookie", "api-key", "x-api-key"];
 
 /** Kahn topological sort; throws on cycle or dangling reference. */
 export function topoSort(nodes: NodeSpec[]): NodeSpec[] {
@@ -181,16 +185,19 @@ export class Engine {
       const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
       const url =
         typeof input === "string" ? input : input instanceof URL ? input.href : (input as Request).url;
-      const cacheable = this.fetchCacheTtlMs > 0 && method === "GET";
+      // Never cache credentialed requests — one principal's response must not be
+      // served to another (the cache is shared across connectors/workflows/runs).
+      const reqHeaders = new Headers(
+        init?.headers ?? (input instanceof Request ? (input as Request).headers : undefined),
+      );
+      const hasCreds = CREDENTIAL_HEADERS.some((h) => reqHeaders.has(h));
+      const cacheable = this.fetchCacheTtlMs > 0 && method === "GET" && !hasCreds;
 
       if (cacheable) {
         const hit = this.fetchCache.get(url);
         if (hit && this.now() - hit.at < this.fetchCacheTtlMs) {
           log(`cache hit: ${url}`);
-          return new Response(hit.body, {
-            status: hit.status,
-            headers: hit.contentType ? { "content-type": hit.contentType } : {},
-          });
+          return new Response(hit.body.slice(0), { status: hit.status, headers: hit.headers });
         }
       }
 
@@ -200,23 +207,15 @@ export class Engine {
       try {
         const res = await this.fetchImpl(input, { ...init, signal: ctrl.signal });
         if (cacheable && res.ok) {
-          const body = await res.text();
+          const body = await res.arrayBuffer(); // raw bytes: binary-safe
+          const headers = [...res.headers] as Array<[string, string]>;
+          this.fetchCache.delete(url); // refresh insertion order so the cap evicts true-oldest
           if (this.fetchCache.size >= 100) {
             const oldest = this.fetchCache.keys().next().value;
             if (oldest !== undefined) this.fetchCache.delete(oldest);
           }
-          this.fetchCache.set(url, {
-            at: this.now(),
-            status: res.status,
-            contentType: res.headers.get("content-type"),
-            body,
-          });
-          return new Response(body, {
-            status: res.status,
-            headers: res.headers.get("content-type")
-              ? { "content-type": res.headers.get("content-type")! }
-              : {},
-          });
+          this.fetchCache.set(url, { at: this.now(), status: res.status, headers, body });
+          return new Response(body.slice(0), { status: res.status, headers });
         }
         return res;
       } catch (err) {

@@ -184,6 +184,95 @@ test("GET responses are cached for the TTL; POST is never cached", async () => {
   assert.equal((result.outputs.two as { text: string }).text, "payload");
 });
 
+test("credentialed GETs are never cached (no cross-principal response reuse)", async () => {
+  let gets = 0;
+  const fetchImpl = (async () => {
+    gets++;
+    return new Response(`response-${gets}`, { status: 200 });
+  }) as unknown as typeof fetch;
+
+  const authed: Connector = {
+    id: "a.read",
+    title: "a",
+    async execute(input, ctx) {
+      const token = (input as { token: string }).token;
+      const res = await ctx.fetch("https://api.example.com/me", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      return { body: await res.text() };
+    },
+  };
+  const engine = new Engine({
+    registry: new ConnectorRegistry([authed]),
+    store: new MemoryStore(),
+    fetchImpl,
+    fetchCacheTtlMs: 60_000,
+  });
+  const result = await engine.run({
+    name: "creds",
+    nodes: [
+      { id: "one", uses: "a.read", with: { token: "KEY1" } },
+      { id: "two", uses: "a.read", with: { token: "KEY2" }, needs: ["one"] },
+    ],
+  });
+  assert.equal(result.status, "succeeded");
+  assert.equal(gets, 2, "authorized requests must bypass the shared cache");
+  assert.notEqual(
+    (result.outputs.one as { body: string }).body,
+    (result.outputs.two as { body: string }).body,
+    "KEY2 must not receive KEY1's cached response",
+  );
+});
+
+test("cache hit preserves all response headers and binary-safe bytes", async () => {
+  let calls = 0;
+  const bytes = new Uint8Array([0, 159, 146, 150]); // not valid UTF-8 round-trip
+  const fetchImpl = (async () => {
+    calls++;
+    return new Response(bytes.slice(0), {
+      status: 200,
+      headers: { "content-type": "application/octet-stream", etag: '"v1"' },
+    });
+  }) as unknown as typeof fetch;
+  const reader: Connector = {
+    id: "b.read",
+    title: "b",
+    async execute(_i, ctx) {
+      const res = await ctx.fetch("https://bin.example.com/blob");
+      return {
+        etag: res.headers.get("etag"),
+        len: (await res.arrayBuffer()).byteLength,
+        b0: new Uint8Array(await (await ctx.fetch("https://bin.example.com/blob")).arrayBuffer())[1] ?? -1,
+      };
+    },
+  };
+  const engine = new Engine({
+    registry: new ConnectorRegistry([reader]),
+    store: new MemoryStore(),
+    fetchImpl,
+    fetchCacheTtlMs: 60_000,
+  });
+  const result = await engine.run({ name: "bin", nodes: [{ id: "n", uses: "b.read" }] });
+  assert.equal(result.status, "succeeded");
+  assert.equal(calls, 1, "second fetch served from cache");
+  const out = result.outputs.n as { etag: string; len: number; b0: number };
+  assert.equal(out.etag, '"v1"'); // non-content-type header preserved
+  assert.equal(out.len, 4);
+  assert.equal(out.b0, 159); // bytes intact, no UTF-8 mangling
+});
+
+test("kv 'path' outside .flowdock/ or tmpdir is rejected", async () => {
+  const ctx = makeTestContext();
+  await assert.rejects(
+    () => kvSet.execute({ key: "k", value: 1, path: "/etc/flowdock-evil.json" }, ctx),
+    /must stay under/,
+  );
+  await assert.rejects(
+    () => kvGet.execute({ key: "k", path: "../outside.json" }, ctx),
+    /must stay under/,
+  );
+});
+
 test("cache off by default — every GET hits the network", async () => {
   let gets = 0;
   const fetchImpl = (async () => {

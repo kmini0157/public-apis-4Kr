@@ -8,6 +8,8 @@
  */
 
 import { createHash } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join, resolve, sep } from "node:path";
 import { JsonKv } from "../store.ts";
 import type { Connector, ConnectorContext, ConnectorManifest, Json } from "../types.ts";
 
@@ -355,11 +357,20 @@ const vectorQuery: Connector = {
   },
 };
 
-// One JsonKv per file path — a shared instance keeps read-modify-write
-// sequences atomic within the process (the JS event loop serializes them).
+// One JsonKv per RESOLVED file path — a shared instance keeps read-modify-write
+// sequences atomic within the process, and canonicalizing the key stops two
+// spellings of the same file from racing each other. A caller-supplied `path`
+// is confined to .flowdock/ or the OS temp dir (tests): workflow YAML must not
+// be able to write arbitrary filesystem locations.
 const kvInstances = new Map<string, JsonKv>();
 function kvFor(path: string | undefined): JsonKv {
-  const p = path ?? ".flowdock/kv.json";
+  const p = resolve(path ?? join(".flowdock", "kv.json"));
+  if (path !== undefined) {
+    const roots = [resolve(".flowdock"), resolve(tmpdir())];
+    if (!roots.some((root) => p === root || p.startsWith(root + sep))) {
+      throw new Error(`kv 'path' must stay under .flowdock/ or the OS temp dir, got '${path}'`);
+    }
+  }
   let kv = kvInstances.get(p);
   if (!kv) {
     kv = new JsonKv(p);
